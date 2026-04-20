@@ -4,8 +4,7 @@ import inspect
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-
-pytest.importorskip("pyvista")
+from batwind.smart_ds import SmartDs
 
 from batwind.pyvista import (
     build_magnetic_field_lines,
@@ -13,19 +12,26 @@ from batwind.pyvista import (
     plot_magnetic_field_lines,
     plot_pyvista_viewport,
 )
+from batwind.pyvista.field_lines import (
+    build_closed_field_line_max_radius_surface,
+    build_field_line_max_radius_surface,
+    closed_field_line_max_radius_map,
+    field_line_max_radius_map,
+)
 from batwind.pyvista.fields import radial_component
-from test.pyvista_test_support import make_structured_dataset, scalar_bar_actor, scalar_mesh_actor
+from test.pyvista_test_support import make_structured_smart_ds, scalar_bar_actor, scalar_mesh_actor
 
 
 EXAMPLE_PLT = Path("examples/3d__var_1_n00000000.plt")
 
-def _make_magnetic_dataset(vector_field, *, n: int = 9, extent: float = 2.0):
+
+def _make_magnetic_smart_ds(vector_field, *, n: int = 9, extent: float = 2.0):
     xs = np.linspace(-extent, extent, n)
     ys = np.linspace(-extent, extent, n)
     zs = np.linspace(-extent, extent, n)
     x, y, z = np.meshgrid(xs, ys, zs, indexing="ij")
     bx, by, bz = vector_field(x, y, z)
-    return make_structured_dataset(
+    return make_structured_smart_ds(
         [
             x.ravel(),
             y.ravel(),
@@ -55,10 +61,10 @@ def test_field_line_defaults_use_hundreds_of_seeds():
 
 
 def test_build_magnetic_field_lines_on_uniform_field_marks_all_lines_open():
-    dataset = _make_magnetic_dataset(
+    smart_ds = _make_magnetic_smart_ds(
         lambda x, y, z: (np.ones_like(x), np.zeros_like(y), np.zeros_like(z)),
     )
-    _grid, source, lines = build_magnetic_field_lines(dataset, n_seeds=24)
+    _grid, source, lines = build_magnetic_field_lines(smart_ds, n_seeds=24)
 
     is_open = np.asarray(lines.cell_data["field_line_is_open"], dtype=bool)
     end_radius = np.asarray(lines.cell_data["field_line_end_radius [R]"], dtype=float)
@@ -74,10 +80,10 @@ def test_build_magnetic_field_lines_on_uniform_field_marks_all_lines_open():
 
 
 def test_build_magnetic_field_lines_on_toroidal_field_marks_all_lines_closed():
-    dataset = _make_magnetic_dataset(
+    smart_ds = _make_magnetic_smart_ds(
         lambda x, y, z: (-y, x, np.zeros_like(z)),
     )
-    _grid, _source, lines = build_magnetic_field_lines(dataset, n_seeds=24)
+    _grid, _source, lines = build_magnetic_field_lines(smart_ds, n_seeds=24)
 
     is_open = np.asarray(lines.cell_data["field_line_is_open"], dtype=bool)
     end_radius = np.asarray(lines.cell_data["field_line_end_radius [R]"], dtype=float)
@@ -89,39 +95,144 @@ def test_build_magnetic_field_lines_on_toroidal_field_marks_all_lines_closed():
     np.testing.assert_allclose(max_radius, 1.02, atol=2e-3)
 
 
-def test_open_flux_and_area_fractions_on_uniform_field_are_all_open():
-    dataset = _make_magnetic_dataset(
+def test_field_line_max_radius_map_on_toroidal_field_is_seed_radius_everywhere():
+    smart_ds = _make_magnetic_smart_ds(
+        lambda x, y, z: (-y, x, np.zeros_like(z)),
+    )
+    out = field_line_max_radius_map(smart_ds, n_polar=10, n_azimuth=20)
+
+    polar = np.asarray(out["polar [rad]"], dtype=float)
+    azimuth = np.asarray(out["azimuth [rad]"], dtype=float)
+    solid_angle = np.asarray(out["cell_solid_angle [sr]"], dtype=float)
+    max_radius = np.asarray(out["field_line_max_radius [R]"], dtype=float)
+
+    assert polar.shape == (10, 20)
+    assert azimuth.shape == polar.shape
+    assert solid_angle.shape == polar.shape
+    assert max_radius.shape == polar.shape
+    assert np.isclose(np.sum(solid_angle), 4.0 * np.pi)
+    np.testing.assert_allclose(max_radius, 1.02, atol=2e-3)
+
+
+def test_build_field_line_max_radius_surface_on_toroidal_field_is_spherical():
+    smart_ds = _make_magnetic_smart_ds(
+        lambda x, y, z: (-y, x, np.zeros_like(z)),
+    )
+    surface = build_field_line_max_radius_surface(smart_ds, n_polar=10, n_azimuth=20)
+
+    point_radius = np.linalg.norm(np.asarray(surface.points, dtype=float), axis=1)
+    cell_radius = np.asarray(surface.cell_data["field_line_max_radius [R]"], dtype=float)
+
+    assert surface.n_cells == 10 * 20
+    assert surface.active_scalars_name == "field_line_max_radius [R]"
+    np.testing.assert_allclose(cell_radius, 1.02, atol=2e-3)
+    np.testing.assert_allclose(point_radius, 1.02, atol=2e-3)
+
+
+def test_closed_field_line_max_radius_map_on_toroidal_field_is_seed_radius_everywhere():
+    smart_ds = _make_magnetic_smart_ds(
+        lambda x, y, z: (-y, x, np.zeros_like(z)),
+    )
+    out = closed_field_line_max_radius_map(smart_ds, open_radius=1.2, n_polar=10, n_azimuth=20)
+    closed_radius = np.asarray(out["closed_field_line_max_radius [R]"], dtype=float)
+
+    assert closed_radius.shape == (10, 20)
+    np.testing.assert_allclose(closed_radius, 1.02, atol=2e-3)
+
+
+def test_closed_field_line_max_radius_map_on_uniform_field_is_all_nan():
+    smart_ds = _make_magnetic_smart_ds(
         lambda x, y, z: (np.ones_like(x), np.zeros_like(y), np.zeros_like(z)),
     )
-    out = open_flux_and_area_fractions(dataset, n_seeds=24, open_radius=1.2)
+    out = closed_field_line_max_radius_map(smart_ds, open_radius=1.2, n_polar=10, n_azimuth=20)
 
-    assert out["open_count"] == 24
-    assert out["closed_count"] == 0
-    assert out["undetermined_count"] == 0
-    assert out["open_area_fraction [none]"] == pytest.approx(1.0)
-    assert out["open_flux_fraction [none]"] == pytest.approx(1.0)
-    assert out["undetermined_area_fraction [none]"] == pytest.approx(0.0)
-    assert out["undetermined_flux_fraction [none]"] == pytest.approx(0.0)
+    assert np.all(np.isnan(np.asarray(out["closed_field_line_max_radius [R]"], dtype=float)))
+
+
+def test_build_closed_field_line_max_radius_surface_on_uniform_field_raises():
+    smart_ds = _make_magnetic_smart_ds(
+        lambda x, y, z: (np.ones_like(x), np.zeros_like(y), np.zeros_like(z)),
+    )
+    with pytest.raises(ValueError, match="No finite cells"):
+        build_closed_field_line_max_radius_surface(smart_ds, open_radius=1.2, n_polar=10, n_azimuth=20)
+
+
+def test_open_flux_and_area_fractions_on_uniform_field_are_all_open():
+    smart_ds = _make_magnetic_smart_ds(
+        lambda x, y, z: (np.ones_like(x), np.zeros_like(y), np.zeros_like(z)),
+    )
+    open_flux_fraction, open_area_fraction = open_flux_and_area_fractions(smart_ds, n_seeds=24, open_radius=1.2)
+
+    assert open_area_fraction == pytest.approx(1.0)
+    assert open_flux_fraction == pytest.approx(1.0)
 
 
 def test_open_flux_and_area_fractions_on_toroidal_field_are_closed_with_zero_radial_flux():
-    dataset = _make_magnetic_dataset(
+    smart_ds = _make_magnetic_smart_ds(
         lambda x, y, z: (-y, x, np.zeros_like(z)),
     )
-    out = open_flux_and_area_fractions(dataset, n_seeds=24, open_radius=1.2)
+    open_flux_fraction, open_area_fraction = open_flux_and_area_fractions(smart_ds, n_seeds=24, open_radius=1.2)
 
-    assert out["open_count"] == 0
-    assert out["closed_count"] == 24
-    assert out["undetermined_count"] == 0
-    assert out["open_area_fraction [none]"] == pytest.approx(0.0)
-    assert out["undetermined_area_fraction [none]"] == pytest.approx(0.0)
-    assert out["open_flux_fraction [none]"] == pytest.approx(0.0, abs=1e-12)
-    assert out["undetermined_flux_fraction [none]"] == pytest.approx(0.0, abs=1e-12)
+    assert open_area_fraction == pytest.approx(0.0)
+    assert open_flux_fraction == pytest.approx(0.0, abs=1e-12)
+
+
+@pytest.mark.skipif(not EXAMPLE_PLT.exists(), reason="example BATSRUS file not present")
+def test_field_line_max_radius_map_on_example_file_is_bounded():
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    out = field_line_max_radius_map(smart_ds, n_polar=12, n_azimuth=24)
+    max_radius = np.asarray(out["field_line_max_radius [R]"], dtype=float)
+
+    assert max_radius.shape == (12, 24)
+    assert np.all(np.isfinite(max_radius))
+    assert np.all(max_radius >= 1.02 - 1e-6)
+    assert np.any(max_radius > 2.0)
+
+
+@pytest.mark.skipif(not EXAMPLE_PLT.exists(), reason="example BATSRUS file not present")
+def test_build_field_line_max_radius_surface_matches_example_map():
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    out = field_line_max_radius_map(smart_ds, n_polar=12, n_azimuth=24)
+    surface = build_field_line_max_radius_surface(smart_ds, n_polar=12, n_azimuth=24)
+    cell_radius = np.asarray(surface.cell_data["field_line_max_radius [R]"], dtype=float)
+    expected_radius = np.asarray(out["field_line_max_radius [R]"], dtype=float)
+
+    assert surface.n_cells == 12 * 24
+    assert surface.n_points > 0
+    np.testing.assert_allclose(np.sort(cell_radius), np.sort(expected_radius.ravel()), rtol=0.0, atol=0.0)
+
+
+@pytest.mark.skipif(not EXAMPLE_PLT.exists(), reason="example BATSRUS file not present")
+def test_closed_field_line_max_radius_map_on_example_file_has_masked_open_regions():
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    out = closed_field_line_max_radius_map(smart_ds, open_radius=30.0, n_polar=12, n_azimuth=24)
+    closed_radius = np.asarray(out["closed_field_line_max_radius [R]"], dtype=float)
+    finite = closed_radius[np.isfinite(closed_radius)]
+
+    assert closed_radius.shape == (12, 24)
+    assert finite.size > 0
+    assert np.any(~np.isfinite(closed_radius))
+    assert np.all(finite >= 1.02 - 1e-6)
+
+
+@pytest.mark.skipif(not EXAMPLE_PLT.exists(), reason="example BATSRUS file not present")
+def test_build_closed_field_line_max_radius_surface_matches_example_closed_map():
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    out = closed_field_line_max_radius_map(smart_ds, open_radius=30.0, n_polar=12, n_azimuth=24)
+    surface = build_closed_field_line_max_radius_surface(smart_ds, open_radius=30.0, n_polar=12, n_azimuth=24)
+    cell_radius = np.asarray(surface.cell_data["closed_field_line_max_radius [R]"], dtype=float)
+    expected_radius = np.asarray(out["closed_field_line_max_radius [R]"], dtype=float)
+    finite_expected = np.isfinite(expected_radius)
+
+    assert surface.n_cells == int(np.count_nonzero(finite_expected))
+    assert surface.n_points > 0
+    np.testing.assert_allclose(np.sort(cell_radius), np.sort(expected_radius[finite_expected]), rtol=0.0, atol=0.0)
 
 
 @pytest.mark.skipif(not EXAMPLE_PLT.exists(), reason="example BATSRUS file not present")
 def test_build_magnetic_field_lines_from_example_file():
-    grid, source, lines = build_magnetic_field_lines(str(EXAMPLE_PLT), n_seeds=24)
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    grid, source, lines = build_magnetic_field_lines(smart_ds, n_seeds=24)
     body_radius = float(np.asarray(grid.field_data["RBODY [R]"]).ravel()[0])
 
     assert grid.n_points > 0
@@ -166,18 +277,12 @@ def test_build_magnetic_field_lines_from_example_file():
 
 @pytest.mark.skipif(not EXAMPLE_PLT.exists(), reason="example BATSRUS file not present")
 def test_open_flux_and_area_fractions_on_example_file_are_bounded():
-    out = open_flux_and_area_fractions(str(EXAMPLE_PLT), n_seeds=48, open_radius=30.0)
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    open_flux_fraction, open_area_fraction = open_flux_and_area_fractions(smart_ds, n_seeds=48, open_radius=30.0)
 
-    assert out["n_seeds"] == 48
-    assert out["open_count"] + out["closed_count"] + out["undetermined_count"] == 48
-    assert 0.0 <= out["open_area_fraction [none]"] <= 1.0
-    assert 0.0 <= out["undetermined_area_fraction [none]"] <= 1.0
-    assert out["open_area_fraction [none]"] + out["undetermined_area_fraction [none]"] <= 1.0
-    assert np.isfinite(out["open_flux_fraction [none]"])
-    assert np.isfinite(out["undetermined_flux_fraction [none]"])
-    assert 0.0 <= out["open_flux_fraction [none]"] <= 1.0
-    assert 0.0 <= out["undetermined_flux_fraction [none]"] <= 1.0
-    assert out["open_flux_fraction [none]"] + out["undetermined_flux_fraction [none]"] <= 1.0
+    assert 0.0 <= open_area_fraction <= 1.0
+    assert np.isfinite(open_flux_fraction)
+    assert 0.0 <= open_flux_fraction <= 1.0
 
 
 @pytest.mark.skipif(not EXAMPLE_PLT.exists(), reason="example BATSRUS file not present")
@@ -186,11 +291,10 @@ def test_plot_magnetic_field_lines_off_screen_writes_screenshot(tmp_path):
     viewport_screenshot = tmp_path / "magnetic-field-lines-viewport.png"
     plot_radius = 3.0
     open_line_plot_radius = 1.5
-    default_n_seeds = inspect.signature(plot_magnetic_field_lines).parameters["n_seeds"].default
-
     fig = None
-    plotter, lines, source, _grid = plot_magnetic_field_lines(
-        str(EXAMPLE_PLT),
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    plotter, lines = plot_magnetic_field_lines(
+        smart_ds,
         plot_radius=plot_radius,
         open_line_plot_radius=open_line_plot_radius,
         off_screen=True,
@@ -216,7 +320,6 @@ def test_plot_magnetic_field_lines_off_screen_writes_screenshot(tmp_path):
         fig.savefig(viewport_screenshot, dpi=180)
 
         assert lines.n_points > 0
-        assert source.n_points == default_n_seeds
         assert "symlog B_r [arb]" in lines.point_data
         assert np.linalg.norm(lines.points, axis=1).max() <= 3.0 + 1e-6
 
@@ -233,6 +336,9 @@ def test_plot_magnetic_field_lines_off_screen_writes_screenshot(tmp_path):
         assert scalar_bar.GetLabelTextProperty().GetFontSize() >= 30
         assert colorbar is not None
         assert colorbar.ax.yaxis.label.get_text() == "symlog B_r [arb]"
+        assert ax.xaxis.get_minorticklocs().size > 0
+        assert ax.yaxis.get_minorticklocs().size > 0
+        assert colorbar.ax.yaxis.get_minorticklocs().size > 0
         assert np.any(np.any(image[:, :, :3] != image[0, 0, :3], axis=2))
     finally:
         if fig is not None:

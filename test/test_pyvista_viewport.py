@@ -7,6 +7,7 @@ from matplotlib.colors import ListedColormap, Normalize
 
 from batwind.pyvista import plot_pyvista_viewport
 from batwind.pyvista.viewport import apply_matplotlib_color_source
+from test.pyvista_test_support import scalar_bar_actor
 
 
 pv.OFF_SCREEN = True
@@ -157,9 +158,9 @@ def test_plot_pyvista_viewport_is_isometric_and_uses_physical_axes(tmp_path):
         view_center=(0.0, 0.0, 0.0),
         parallel_scale=_VIEW_HALF_SIZE,
         render_size=_TEST_RENDER_SIZE,
-        overlay_text="isometric test",
     )
     try:
+        ax.text(0.02, 0.98, "isometric test", transform=ax.transAxes, ha="left", va="top")
         _add_projected_world_axes(ax, plotter, axis_length=0.9)
         fig.savefig(output, dpi=120)
 
@@ -193,9 +194,9 @@ def test_plot_pyvista_viewport_renders_plain_l_geometry(tmp_path):
         view_center=(0.0, 0.0, 0.0),
         parallel_scale=_VIEW_HALF_SIZE,
         render_size=_TEST_RENDER_SIZE,
-        overlay_text="plain L",
     )
     try:
+        ax.text(0.02, 0.98, "plain L", transform=ax.transAxes, ha="left", va="top")
         _add_projected_world_axes(ax, plotter, axis_length=0.9)
         fig.savefig(output, dpi=120)
         nonwhite = np.any(image[:, :, :3] != 255, axis=2)
@@ -242,7 +243,6 @@ def test_plot_pyvista_viewport_uses_pyvista_colormap_on_z(tmp_path):
         view_center=(0.0, 0.0, 0.0),
         parallel_scale=_VIEW_HALF_SIZE,
         render_size=_TEST_RENDER_SIZE,
-        overlay_text="viridis",
     )
     fig_b, ax_b, colorbar_b, image_b = plot_pyvista_viewport(
         plotter_b,
@@ -251,13 +251,17 @@ def test_plot_pyvista_viewport_uses_pyvista_colormap_on_z(tmp_path):
         view_center=(0.0, 0.0, 0.0),
         parallel_scale=_VIEW_HALF_SIZE,
         render_size=_TEST_RENDER_SIZE,
-        overlay_text="plasma",
     )
     try:
+        ax_a.text(0.02, 0.98, "viridis", transform=ax_a.transAxes, ha="left", va="top")
+        ax_b.text(0.02, 0.98, "plasma", transform=ax_b.transAxes, ha="left", va="top")
         _add_projected_world_axes(ax_a, plotter_a, axis_length=0.9)
         _add_projected_world_axes(ax_b, plotter_b, axis_length=0.9)
         fig_a.savefig(output_a, dpi=120)
         fig_b.savefig(output_b, dpi=120)
+        fig_a.canvas.draw()
+        ax_bbox = ax_a.get_window_extent()
+        colorbar_bbox = colorbar_a.ax.get_window_extent()
 
         diff = np.abs(image_a[:, :, :3].astype(int) - image_b[:, :, :3].astype(int)).sum()
 
@@ -265,6 +269,10 @@ def test_plot_pyvista_viewport_uses_pyvista_colormap_on_z(tmp_path):
         assert colorbar_b is not None
         assert colorbar_a.ax.yaxis.label.get_text() == "Z [R]"
         assert colorbar_b.ax.yaxis.label.get_text() == "Z [R]"
+        assert ax_a.xaxis.get_minorticklocs().size > 0
+        assert ax_a.yaxis.get_minorticklocs().size > 0
+        assert colorbar_a.ax.yaxis.get_minorticklocs().size > 0
+        assert colorbar_bbox.width < 0.2 * ax_bbox.width
         assert diff > 250_000
         assert output_a.exists()
         assert output_b.exists()
@@ -388,9 +396,9 @@ def test_apply_matplotlib_colorbar_to_pyvista_actor(tmp_path):
         view_center=(0.0, 0.0, 0.0),
         parallel_scale=_VIEW_HALF_SIZE,
         render_size=_TEST_RENDER_SIZE,
-        overlay_text="mpl -> pyvista",
     )
     try:
+        ax.text(0.02, 0.98, "mpl -> pyvista", transform=ax.transAxes, ha="left", va="top")
         _format_verification_axes(ax)
         _add_projected_world_axes(ax, plotter, axis_length=0.9)
         fig.savefig(output, dpi=120)
@@ -429,9 +437,9 @@ def test_plot_pyvista_viewport_infers_render_size_from_matplotlib_axes(tmp_path)
         view="xz",
         view_center=(0.0, 0.0, 0.0),
         parallel_scale=_VIEW_HALF_SIZE,
-        overlay_text="dpi inferred",
     )
     try:
+        ax.text(0.02, 0.98, "dpi inferred", transform=ax.transAxes, ha="left", va="top")
         _format_verification_axes(ax)
         fig.savefig(output, dpi=180)
 
@@ -470,9 +478,9 @@ def test_plot_pyvista_viewport_can_target_nonzero_world_center(tmp_path):
         view_center=tuple(target_center),
         parallel_scale=1.25,
         render_size=_TEST_RENDER_SIZE,
-        overlay_text="offset target",
     )
     try:
+        ax.text(0.02, 0.98, "offset target", transform=ax.transAxes, ha="left", va="top")
         fig.savefig(output, dpi=120)
 
         np.testing.assert_allclose(plotter.camera.focal_point, target_center, atol=1e-12)
@@ -485,4 +493,57 @@ def test_plot_pyvista_viewport_can_target_nonzero_world_center(tmp_path):
         assert output.stat().st_size > 0
     finally:
         plt.close(fig)
+        plotter.close()
+
+
+def test_plot_pyvista_viewport_draft_toggles_inner_scene_decorations(tmp_path):
+    clean_output = tmp_path / "viewport-clean.png"
+    draft_output = tmp_path / "viewport-draft.png"
+    mesh = _test_l_shape()
+    plotter = _new_plotter()
+    actor = plotter.add_mesh(
+        mesh,
+        scalars="Z [R]",
+        cmap="viridis",
+        clim=(0.0, 2.0),
+        lighting=False,
+    )
+    plotter.add_axes()
+
+    fig_clean, ax_clean, colorbar_clean, image_clean = plot_pyvista_viewport(
+        plotter,
+        colorbar_actor=actor,
+        colorbar_label="Z [R]",
+        draft=False,
+        view_center=(0.0, 0.0, 0.0),
+        parallel_scale=_VIEW_HALF_SIZE,
+        render_size=_TEST_RENDER_SIZE,
+    )
+    fig_draft, ax_draft, colorbar_draft, image_draft = plot_pyvista_viewport(
+        plotter,
+        colorbar_actor=actor,
+        colorbar_label="Z [R]",
+        draft=True,
+        view_center=(0.0, 0.0, 0.0),
+        parallel_scale=_VIEW_HALF_SIZE,
+        render_size=_TEST_RENDER_SIZE,
+    )
+    try:
+        fig_clean.savefig(clean_output, dpi=120)
+        fig_draft.savefig(draft_output, dpi=120)
+        scalar_bar = scalar_bar_actor(plotter)
+        diff = np.abs(image_clean[:, :, :3].astype(int) - image_draft[:, :, :3].astype(int)).sum()
+
+        assert colorbar_clean is not None
+        assert colorbar_draft is not None
+        assert plotter.renderer.axes_enabled
+        assert scalar_bar.GetVisibility() == 1
+        assert diff > 100_000
+        assert clean_output.exists()
+        assert draft_output.exists()
+        assert clean_output.stat().st_size > 0
+        assert draft_output.stat().st_size > 0
+    finally:
+        plt.close(fig_clean)
+        plt.close(fig_draft)
         plotter.close()

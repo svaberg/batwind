@@ -4,8 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import pyvista as pv
-
-pytest.importorskip("pyvista")
+from batwind.smart_ds import SmartDs
 
 from batwind.pyvista import (
     alfven_surface_averages,
@@ -16,20 +15,21 @@ from batwind.pyvista import (
     plot_current_sheet_surface,
     plot_pyvista_viewport,
 )
-from batwind.pyvista._scalar_bar import readable_scalar_bar_args
-from test.pyvista_test_support import make_structured_dataset, scalar_bar_actor, scalar_mesh_actor
+from batwind.pyvista.isosurfaces import alfven_surface_radius_map
+from test.pyvista_test_support import make_structured_smart_ds, scalar_bar_actor, scalar_mesh_actor
 
 
 EXAMPLE_PLT = Path("examples/3d__var_1_n00000000.plt")
 _MU0 = 4.0e-7 * np.pi
 
-def _make_mhd_dataset(field_fn, *, n: int = 20, extent: float = 1.5):
+
+def _make_mhd_smart_ds(field_fn, *, n: int = 20, extent: float = 1.5):
     xs = np.linspace(-extent, extent, n)
     ys = np.linspace(-extent, extent, n)
     zs = np.linspace(-extent, extent, n)
     x, y, z = np.meshgrid(xs, ys, zs, indexing="ij")
     rho_cgs, ux_kms, uy_kms, uz_kms, bx_gauss, by_gauss, bz_gauss = field_fn(x, y, z)
-    return make_structured_dataset(
+    return make_structured_smart_ds(
         [
             x.ravel(),
             y.ravel(),
@@ -65,7 +65,7 @@ def test_build_alfven_surface_on_synthetic_unit_sphere():
     density_si = 1.0e-9
     magnetic_scale_si = 1.0e-4
     wind_speed_si = magnetic_scale_si / np.sqrt(_MU0 * density_si)
-    dataset = _make_mhd_dataset(
+    smart_ds = _make_mhd_smart_ds(
         lambda x, y, z: (
             np.full_like(x, density_si / 1e3),
             np.full_like(x, wind_speed_si / 1e3),
@@ -77,7 +77,7 @@ def test_build_alfven_surface_on_synthetic_unit_sphere():
         )
     )
 
-    _grid, surface = build_alfven_surface(dataset)
+    _grid, surface = build_alfven_surface(smart_ds)
     radii = np.linalg.norm(np.asarray(surface.points, dtype=float), axis=1)
     mach = np.asarray(surface.point_data["M_A [none]"], dtype=float)
 
@@ -94,7 +94,7 @@ def test_alfven_surface_averages_match_synthetic_projected_surface():
     speed_scale_si = magnetic_scale_si / np.sqrt(_MU0 * density_si)
     amplitude = 0.25
 
-    dataset = _make_mhd_dataset(
+    smart_ds = _make_mhd_smart_ds(
         lambda x, y, z: _synthetic_alfven_average_field(
             x,
             y,
@@ -107,17 +107,50 @@ def test_alfven_surface_averages_match_synthetic_projected_surface():
         extent=2.0,
     )
 
-    out = alfven_surface_averages(dataset)
+    average_radius, average_cyl_radius = alfven_surface_averages(smart_ds)
 
-    assert out["cell_count"] > 0
-    assert out["average_alfven_radius [R]"] == pytest.approx(1.0 + amplitude * np.pi / 4.0, abs=0.03)
-    assert out["average_alfven_cyl_radius [R]"] == pytest.approx(np.pi / 4.0 + amplitude * (2.0 / 3.0), abs=0.03)
-    assert out["min_alfven_radius [R]"] == pytest.approx(1.0, abs=0.03)
-    assert out["max_alfven_radius [R]"] == pytest.approx(1.0 + amplitude, abs=0.03)
+    assert average_radius == pytest.approx(1.0 + amplitude * np.pi / 4.0, abs=0.03)
+    assert average_cyl_radius == pytest.approx(np.pi / 4.0 + amplitude * (2.0 / 3.0), abs=0.03)
+
+
+def test_alfven_surface_radius_map_matches_synthetic_surface():
+    density_si = 1.0e-9
+    magnetic_scale_si = 1.0e-4
+    speed_scale_si = magnetic_scale_si / np.sqrt(_MU0 * density_si)
+    amplitude = 0.25
+
+    smart_ds = _make_mhd_smart_ds(
+        lambda x, y, z: _synthetic_alfven_average_field(
+            x,
+            y,
+            z,
+            density_si=density_si,
+            speed_scale_si=speed_scale_si,
+            amplitude=amplitude,
+        ),
+        n=31,
+        extent=2.0,
+    )
+
+    out = alfven_surface_radius_map(smart_ds, n_polar=18, n_azimuth=36)
+
+    polar = np.asarray(out["polar [rad]"], dtype=float)
+    azimuth = np.asarray(out["azimuth [rad]"], dtype=float)
+    solid_angle = np.asarray(out["cell_solid_angle [sr]"], dtype=float)
+    radius_map = np.asarray(out["alfven_radius [R]"], dtype=float)
+    expected = 1.0 + amplitude * np.sin(polar)
+
+    assert polar.shape == (18, 36)
+    assert azimuth.shape == polar.shape
+    assert solid_angle.shape == polar.shape
+    assert radius_map.shape == polar.shape
+    assert np.isclose(np.sum(solid_angle), 4.0 * np.pi)
+    assert np.all(np.isfinite(radius_map))
+    assert np.nanmax(np.abs(radius_map - expected)) < 0.03
 
 
 def test_build_current_sheet_surface_on_synthetic_midplane():
-    dataset = _make_mhd_dataset(
+    smart_ds = _make_mhd_smart_ds(
         lambda x, y, z: (
             np.full_like(x, 1.0e-12),
             np.full_like(x, 300.0),
@@ -129,7 +162,7 @@ def test_build_current_sheet_surface_on_synthetic_midplane():
         )
     )
 
-    grid, surface = build_current_sheet_surface(dataset)
+    grid, surface = build_current_sheet_surface(smart_ds)
     radial = np.asarray(grid.point_data["B_r [T]"]).ravel()
     surface_br = np.asarray(surface.point_data["B_r [T]"]).ravel()
 
@@ -145,7 +178,7 @@ def test_current_sheet_orientation_matches_tilted_synthetic_plane():
     angle_deg = 35.0
     angle = np.deg2rad(angle_deg)
     normal = np.array([np.sin(angle), 0.0, np.cos(angle)], dtype=float)
-    dataset = _make_mhd_dataset(
+    smart_ds = _make_mhd_smart_ds(
         lambda x, y, z: (
             np.full_like(x, 1.0e-12),
             np.full_like(x, 300.0),
@@ -158,15 +191,23 @@ def test_current_sheet_orientation_matches_tilted_synthetic_plane():
         n=21,
     )
 
-    out = current_sheet_orientation(dataset, rmin=0.2, rmax=1.4, max_points=10_000)
+    inclination = current_sheet_orientation(smart_ds, rmin=0.2, rmax=1.4, max_points=10_000)
 
-    assert out["point_count"] >= 3
-    np.testing.assert_allclose(
-        np.asarray(out["normal [none]"], dtype=float),
-        normal,
-        atol=5e-4,
-    )
-    assert out["inclination [deg]"] == pytest.approx(angle_deg, abs=0.05)
+    assert inclination == pytest.approx(angle_deg, abs=0.05)
+
+
+@pytest.mark.skipif(not EXAMPLE_PLT.exists(), reason="example BATSRUS file not present")
+def test_alfven_surface_radius_map_from_example_file_is_bounded():
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    average_radius, _average_cyl_radius = alfven_surface_averages(smart_ds)
+    out = alfven_surface_radius_map(smart_ds, n_polar=12, n_azimuth=24)
+    radius_map = np.asarray(out["alfven_radius [R]"], dtype=float)
+    finite = radius_map[np.isfinite(radius_map)]
+
+    assert radius_map.shape == (12, 24)
+    assert finite.size > 0
+    assert np.all(finite > 0.0)
+    assert np.nanmin(finite) <= average_radius <= np.nanmax(finite)
 
 
 def _synthetic_alfven_average_field(x, y, z, *, density_si: float, speed_scale_si: float, amplitude: float):
@@ -293,22 +334,25 @@ def _render_slice_image(
 
 @pytest.mark.skipif(not EXAMPLE_PLT.exists(), reason="example BATSRUS file not present")
 def test_alfven_surface_averages_run_on_example_file():
-    out = alfven_surface_averages(str(EXAMPLE_PLT))
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    average_radius, average_cyl_radius = alfven_surface_averages(smart_ds)
+    radius_map = np.asarray(alfven_surface_radius_map(smart_ds, n_polar=12, n_azimuth=24)["alfven_radius [R]"], dtype=float)
+    finite = radius_map[np.isfinite(radius_map)]
 
-    assert out["cell_count"] > 0
-    assert np.isfinite(out["average_alfven_radius [R]"])
-    assert np.isfinite(out["average_alfven_cyl_radius [R]"])
-    assert out["min_alfven_radius [R]"] > 0.0
-    assert out["max_alfven_radius [R]"] >= out["min_alfven_radius [R]"]
-    assert out["average_alfven_radius [R]"] >= out["min_alfven_radius [R]"]
-    assert out["average_alfven_radius [R]"] <= out["max_alfven_radius [R]"]
-    assert out["average_alfven_cyl_radius [R]"] >= 0.0
-    assert out["average_alfven_cyl_radius [R]"] <= out["average_alfven_radius [R]"]
+    assert np.isfinite(average_radius)
+    assert np.isfinite(average_cyl_radius)
+    assert finite.size > 0
+    assert np.nanmin(finite) > 0.0
+    assert average_radius >= np.nanmin(finite)
+    assert average_radius <= np.nanmax(finite)
+    assert average_cyl_radius >= 0.0
+    assert average_cyl_radius <= average_radius
 
 
 @pytest.mark.skipif(not EXAMPLE_PLT.exists(), reason="example BATSRUS file not present")
 def test_build_alfven_surface_from_example_file():
-    grid, surface = build_alfven_surface(str(EXAMPLE_PLT))
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    grid, surface = build_alfven_surface(smart_ds)
 
     assert grid.n_points > 0
     assert surface.n_points > 0
@@ -330,7 +374,8 @@ def test_build_alfven_surface_from_example_file():
 
 @pytest.mark.skipif(not EXAMPLE_PLT.exists(), reason="example BATSRUS file not present")
 def test_build_current_sheet_surface_from_example_file():
-    grid, surface = build_current_sheet_surface(str(EXAMPLE_PLT))
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    grid, surface = build_current_sheet_surface(smart_ds)
 
     assert grid.n_points > 0
     assert surface.n_points > 0
@@ -353,16 +398,11 @@ def test_build_current_sheet_surface_from_example_file():
 
 @pytest.mark.skipif(not EXAMPLE_PLT.exists(), reason="example BATSRUS file not present")
 def test_current_sheet_orientation_runs_on_example_file():
-    out = current_sheet_orientation(str(EXAMPLE_PLT), rmax=30.0)
-    normal = np.asarray(out["normal [none]"], dtype=float)
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    inclination = current_sheet_orientation(smart_ds, rmax=30.0)
 
-    assert out["point_count"] >= 3
-    assert out["rmin [R]"] == pytest.approx(0.0)
-    assert out["rmax [R]"] == pytest.approx(30.0)
-    np.testing.assert_allclose(np.linalg.norm(normal), 1.0, atol=1e-12)
-    assert normal[2] >= 0.0
-    assert out["inclination [deg]"] >= 0.0
-    assert out["inclination [deg]"] <= 90.0
+    assert inclination >= 0.0
+    assert inclination <= 90.0
 
 
 @pytest.mark.skipif(not EXAMPLE_PLT.exists(), reason="example BATSRUS file not present")
@@ -373,8 +413,9 @@ def test_plot_alfven_surface_off_screen_writes_screenshot(tmp_path):
     u_vmax = 5.0e5
 
     fig = None
-    plotter, surface, _grid = plot_alfven_surface(
-        str(EXAMPLE_PLT),
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    plotter, surface = plot_alfven_surface(
+        smart_ds,
         vmin=u_vmin,
         vmax=u_vmax,
         off_screen=True,
@@ -412,6 +453,9 @@ def test_plot_alfven_surface_off_screen_writes_screenshot(tmp_path):
         assert colorbar.ax.yaxis.label.get_text() == "U [m/s]"
         assert colorbar.mappable.norm.vmin == pytest.approx(u_vmin)
         assert colorbar.mappable.norm.vmax == pytest.approx(u_vmax)
+        assert ax.xaxis.get_minorticklocs().size > 0
+        assert ax.yaxis.get_minorticklocs().size > 0
+        assert colorbar.ax.yaxis.get_minorticklocs().size > 0
         assert np.any(np.any(image[:, :, :3] != image[0, 0, :3], axis=2))
     finally:
         if fig is not None:
@@ -425,8 +469,9 @@ def test_plot_current_sheet_surface_off_screen_writes_screenshot(tmp_path):
     viewport_screenshot = tmp_path / "current-sheet-viewport.png"
 
     fig = None
-    plotter, surface, _grid = plot_current_sheet_surface(
-        str(EXAMPLE_PLT),
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    plotter, surface = plot_current_sheet_surface(
+        smart_ds,
         off_screen=True,
         screenshot=screenshot,
     )
@@ -459,6 +504,9 @@ def test_plot_current_sheet_surface_off_screen_writes_screenshot(tmp_path):
         assert scalar_bar.GetLabelTextProperty().GetFontSize() >= 30
         assert colorbar is not None
         assert colorbar.ax.yaxis.label.get_text() == "U [m/s]"
+        assert ax.xaxis.get_minorticklocs().size > 0
+        assert ax.yaxis.get_minorticklocs().size > 0
+        assert colorbar.ax.yaxis.get_minorticklocs().size > 0
         assert np.any(np.any(image[:, :, :3] != image[0, 0, :3], axis=2))
     finally:
         if fig is not None:
@@ -472,8 +520,9 @@ def test_pushed_back_midplane_slice_matches_midplane_slice_render(tmp_path):
     pushed_screenshot = tmp_path / "midplane-slice-pushed-back.png"
     u_clim = (0.0, 5.0e5)
 
-    grid, alfven_surface = build_alfven_surface(str(EXAMPLE_PLT))
-    _grid, current_sheet = build_current_sheet_surface(str(EXAMPLE_PLT))
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    grid, alfven_surface = build_alfven_surface(smart_ds)
+    _grid, current_sheet = build_current_sheet_surface(smart_ds)
 
     alfven_radius = float(np.linalg.norm(np.asarray(alfven_surface.points, dtype=float), axis=1).max())
     current_sheet_limit = 1.02 * alfven_radius
@@ -535,8 +584,9 @@ def test_plot_alfven_surface_with_current_sheet_off_screen_writes_screenshot(tmp
     u_vmin = 0.0
     u_vmax = 5.0e5
 
-    grid, alfven_surface = build_alfven_surface(str(EXAMPLE_PLT))
-    _grid, current_sheet = build_current_sheet_surface(str(EXAMPLE_PLT))
+    smart_ds = SmartDs.from_file(str(EXAMPLE_PLT), batsrus=True, spherical=True)
+    grid, alfven_surface = build_alfven_surface(smart_ds)
+    _grid, current_sheet = build_current_sheet_surface(smart_ds)
 
     alfven_radius = float(np.linalg.norm(np.asarray(alfven_surface.points, dtype=float), axis=1).max())
     current_sheet_limit = 1.02 * alfven_radius
@@ -582,14 +632,12 @@ def test_plot_alfven_surface_with_current_sheet_off_screen_writes_screenshot(tmp
             cmap="viridis",
             clim=u_clim,
             smooth_shading=True,
-            scalar_bar_args=readable_scalar_bar_args("U [m/s]"),
+            show_scalar_bar=False,
         )
-        plotter.add_axes()
         plotter.add_title("Alfven surface + current sheet")
         _set_oblique_z_up_camera(plotter, radius=3.2 * alfven_radius)
         plotter.show(screenshot=str(screenshot), auto_close=False)
 
-        scalar_bar = scalar_bar_actor(plotter)
         fig, ax = plt.subplots(figsize=(7.2, 7.0), dpi=180, constrained_layout=True)
         fig, ax, colorbar, image = plot_pyvista_viewport(
             plotter,
@@ -626,13 +674,15 @@ def test_plot_alfven_surface_with_current_sheet_off_screen_writes_screenshot(tmp
         assert abs(projected_z[0]) < 1e-6
         assert projected_z[1] > 0.0
         assert abs(projected_y[0]) > 0.05
-        assert scalar_bar.GetTitleTextProperty().GetFontSize() >= 36
-        assert scalar_bar.GetLabelTextProperty().GetFontSize() >= 30
+        assert not plotter.scalar_bars
         assert colorbar is not None
         assert colorbar.ax.yaxis.label.get_text() == "U [m/s]"
         assert colorbar.mappable.norm.vmin == pytest.approx(u_vmin)
         assert colorbar.mappable.norm.vmax == pytest.approx(u_vmax)
         assert ax.get_ylabel() == "Z [R]"
+        assert ax.xaxis.get_minorticklocs().size > 0
+        assert ax.yaxis.get_minorticklocs().size > 0
+        assert colorbar.ax.yaxis.get_minorticklocs().size > 0
         assert screenshot.exists()
         assert screenshot.stat().st_size > 0
         assert viewport_screenshot.exists()

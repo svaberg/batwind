@@ -13,7 +13,7 @@ def plot_pyvista_viewport(
     *,
     colorbar_actor=None,
     colorbar_label: str | None = None,
-    overlay_text: str | None = None,
+    draft: bool = False,
     view: str | None = "isometric",
     axis_labels: tuple[str, str] | None = None,
     view_center=(0.0, 0.0, 0.0),
@@ -29,23 +29,80 @@ def plot_pyvista_viewport(
     elif fig is None:
         fig = ax.figure
 
+    if render_size is not None:
+        width, height = render_size
+        plotter.window_size = max(1, int(width)), max(1, int(height))
+    else:
+        fig.canvas.draw()
+        bbox = ax.get_window_extent()
+        plotter.window_size = max(1, int(round(bbox.width))), max(1, int(round(bbox.height)))
+
     if view is None:
         x_label, y_label = axis_labels or ("view x [R]", "view y [R]")
     else:
-        x_label, y_label = _apply_view(plotter, view)
+        if view == "xy":
+            plotter.view_xy()
+            x_label, y_label = "X [R]", "Y [R]"
+        elif view == "xz":
+            plotter.view_xz()
+            x_label, y_label = "X [R]", "Z [R]"
+        elif view == "yz":
+            plotter.view_yz()
+            x_label, y_label = "Y [R]", "Z [R]"
+        elif view == "isometric":
+            plotter.view_isometric()
+            x_label, y_label = "view x [R]", "view y [R]"
+        else:
+            raise ValueError(f"Unsupported viewport view '{view}'")
         if axis_labels is not None:
             x_label, y_label = axis_labels
-    _set_view_center(plotter, view_center)
+    view_center = np.asarray(view_center, dtype=float)
+    focal_point = np.asarray(plotter.camera.focal_point, dtype=float)
+    position = np.asarray(plotter.camera.position, dtype=float)
+    offset = position - focal_point
+    plotter.camera.focal_point = tuple(view_center)
+    plotter.camera.position = tuple(view_center + offset)
+    plotter.reset_camera_clipping_range()
     plotter.enable_parallel_projection()
     if parallel_scale is not None:
         plotter.camera.parallel_scale = float(parallel_scale)
         plotter.reset_camera_clipping_range()
-    plotter.window_size = _resolve_render_size(fig, ax, render_size)
-    plotter.render()
-    image = plotter.screenshot(return_img=True)
-    extent = _parallel_projection_extent(
-        plotter,
-        center=_view_plane_center(view, view_center),
+    scalar_bar_visibility = [int(actor.GetVisibility()) for actor in plotter.scalar_bars.values()]
+    axes_enabled = bool(plotter.renderer.axes_enabled)
+    for actor in plotter.scalar_bars.values():
+        actor.SetVisibility(bool(draft))
+    if plotter.renderer.axes_widget is not None:
+        if draft:
+            plotter.show_axes()
+        else:
+            plotter.hide_axes()
+    try:
+        plotter.render()
+        image = plotter.screenshot(return_img=True)
+    finally:
+        for actor, visible in zip(plotter.scalar_bars.values(), scalar_bar_visibility, strict=True):
+            actor.SetVisibility(bool(visible))
+        if plotter.renderer.axes_widget is not None:
+            if axes_enabled:
+                plotter.show_axes()
+            else:
+                plotter.hide_axes()
+    if view == "xy":
+        center = (float(view_center[0]), float(view_center[1]))
+    elif view == "xz":
+        center = (float(view_center[0]), float(view_center[2]))
+    elif view == "yz":
+        center = (float(view_center[1]), float(view_center[2]))
+    else:
+        center = (0.0, 0.0)
+    width, height = plotter.window_size
+    y_half = float(plotter.camera.parallel_scale)
+    x_half = y_half * float(width) / float(height)
+    extent = (
+        float(center[0] - x_half),
+        float(center[0] + x_half),
+        float(center[1] - y_half),
+        float(center[1] + y_half),
     )
 
     ax.imshow(np.flipud(image), origin="lower", extent=extent)
@@ -54,15 +111,30 @@ def plot_pyvista_viewport(
     ax.set_aspect("equal")
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
-
-    if overlay_text is not None:
-        ax.text(0.02, 0.98, overlay_text, transform=ax.transAxes, ha="left", va="top")
+    ax.minorticks_on()
+    ax.tick_params(which="major", length=5.0)
+    ax.tick_params(which="minor", length=3.0)
 
     colorbar = None
     if colorbar_actor is not None:
-        colorbar = fig.colorbar(_actor_scalar_mappable(colorbar_actor), ax=ax, pad=0.02)
+        lut = colorbar_actor.mapper.lookup_table
+        colors = np.asarray(lut.values, dtype=float)[:, :4] / 255.0
+        colorbar = fig.colorbar(
+            ScalarMappable(
+                norm=Normalize(*lut.scalar_range),
+                cmap=ListedColormap(colors),
+            ),
+            ax=ax,
+            pad=0.02,
+            fraction=0.055,
+            shrink=0.9,
+            aspect=28,
+        )
         if colorbar_label is not None:
             colorbar.set_label(colorbar_label)
+        colorbar.minorticks_on()
+        colorbar.ax.tick_params(which="major", length=5.0)
+        colorbar.ax.tick_params(which="minor", length=3.0)
 
     return fig, ax, colorbar, image
 
@@ -70,12 +142,16 @@ def plot_pyvista_viewport(
 def apply_matplotlib_color_source(
     actor,
     color_source: ScalarMappable | Colorbar,
-    *,
-    n_colors: int = 256,
 ):
     mappable = color_source.mappable if isinstance(color_source, Colorbar) else color_source
-    scalar_range = _mappable_scalar_range(mappable)
-    samples = np.linspace(scalar_range[0], scalar_range[1], int(n_colors))
+    vmin = getattr(mappable.norm, "vmin", None)
+    vmax = getattr(mappable.norm, "vmax", None)
+    if vmin is None or vmax is None:
+        vmin, vmax = mappable.get_clim()
+    if vmin is None or vmax is None:
+        raise ValueError("Matplotlib color source must define a finite scalar range")
+    scalar_range = float(vmin), float(vmax)
+    samples = np.linspace(scalar_range[0], scalar_range[1], 256)
     colors = np.asarray(mappable.to_rgba(samples, bytes=True), dtype=np.uint8)
 
     lut = actor.mapper.lookup_table
@@ -84,95 +160,5 @@ def apply_matplotlib_color_source(
     actor.mapper.scalar_range = scalar_range
     return actor
 
-
-def _actor_scalar_mappable(actor) -> ScalarMappable:
-    lut = actor.mapper.lookup_table
-    colors = np.asarray(lut.values, dtype=float)[:, :4] / 255.0
-    cmap = ListedColormap(colors)
-    norm = Normalize(*lut.scalar_range)
-    return ScalarMappable(norm=norm, cmap=cmap)
-
-
-def _mappable_scalar_range(mappable: ScalarMappable) -> tuple[float, float]:
-    vmin = getattr(mappable.norm, "vmin", None)
-    vmax = getattr(mappable.norm, "vmax", None)
-    if vmin is None or vmax is None:
-        clim = mappable.get_clim()
-        vmin, vmax = clim
-    if vmin is None or vmax is None:
-        raise ValueError("Matplotlib color source must define a finite scalar range")
-    return float(vmin), float(vmax)
-
-
-def _resolve_render_size(fig, ax, render_size) -> tuple[int, int]:
-    if render_size is not None:
-        width, height = render_size
-        return max(1, int(width)), max(1, int(height))
-    return _axes_pixel_size(fig, ax)
-
-
-def _axes_pixel_size(fig, ax) -> tuple[int, int]:
-    # Match the PyVista off-screen image to the Matplotlib axes footprint.
-    fig.canvas.draw()
-    bbox = ax.get_window_extent()
-    return max(1, int(round(bbox.width))), max(1, int(round(bbox.height)))
-
-
-def _apply_view(plotter: pv.Plotter, view: str) -> tuple[str, str]:
-    if view == "xy":
-        plotter.view_xy()
-        return "X [R]", "Y [R]"
-    if view == "xz":
-        plotter.view_xz()
-        return "X [R]", "Z [R]"
-    if view == "yz":
-        plotter.view_yz()
-        return "Y [R]", "Z [R]"
-    if view == "isometric":
-        plotter.view_isometric()
-        return "view x [R]", "view y [R]"
-    raise ValueError(f"Unsupported viewport view '{view}'")
-
-
-def _view_plane_center(view: str | None, view_center) -> tuple[float, float]:
-    view_center = np.asarray(view_center, dtype=float)
-    if view is None:
-        return 0.0, 0.0
-    if view == "xy":
-        return float(view_center[0]), float(view_center[1])
-    if view == "xz":
-        return float(view_center[0]), float(view_center[2])
-    if view == "yz":
-        return float(view_center[1]), float(view_center[2])
-    if view == "isometric":
-        return 0.0, 0.0
-    raise ValueError(f"Unsupported viewport view '{view}'")
-
-
-def _set_view_center(plotter: pv.Plotter, view_center) -> None:
-    view_center = np.asarray(view_center, dtype=float)
-    focal_point = np.asarray(plotter.camera.focal_point, dtype=float)
-    position = np.asarray(plotter.camera.position, dtype=float)
-    offset = position - focal_point
-    plotter.camera.focal_point = tuple(view_center)
-    plotter.camera.position = tuple(view_center + offset)
-    plotter.reset_camera_clipping_range()
-
-
-def _parallel_projection_extent(
-    plotter: pv.Plotter,
-    *,
-    center=(0.0, 0.0),
-) -> tuple[float, float, float, float]:
-    width, height = plotter.window_size
-    y_half = float(plotter.camera.parallel_scale)
-    x_half = y_half * float(width) / float(height)
-    center = np.asarray(center, dtype=float)
-    return (
-        float(center[0] - x_half),
-        float(center[0] + x_half),
-        float(center[1] - y_half),
-        float(center[1] + y_half),
-    )
 
 __all__ = ["apply_matplotlib_color_source", "plot_pyvista_viewport"]

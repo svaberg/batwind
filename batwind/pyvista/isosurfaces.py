@@ -4,45 +4,30 @@ from os import PathLike
 
 import numpy as np
 import pyvista as pv
+from scipy.spatial import cKDTree
 
+from batwind.algorithms.sphere_sampling import PolarAzimuthalGrid
 from batwind.pyvista._scalar_bar import readable_scalar_bar_args
-from batwind.pyvista.convert import DataLike, coerce_smart_ds, to_unstructured_grid
-from batwind.pyvista.fields import radial_component, resolve_density_si, resolve_magnetic_vector_si, resolve_wind_speed_si
-
-
-_MU0 = 4.0e-7 * np.pi
+from batwind.pyvista.convert import to_unstructured_grid
+from batwind.pyvista.fields import resolve_wind_speed_si
+from batwind.smart_ds import SmartDs
 
 
 def build_alfven_surface(
-    data: DataLike,
+    smart_ds: SmartDs,
     *,
     mach_level: float = 1.0,
 ) -> tuple[pv.UnstructuredGrid, pv.PolyData]:
     """
     Build the Alfvén surface ``M_A = mach_level`` and attach wind-speed coloring.
     """
-    sds = coerce_smart_ds(data)
-    state = _mhd_surface_state(sds)
-    density = state["Rho [kg/m^3]"]
-    wind_speed = state["U [m/s]"]
-    magnetic_strength = state["B [T]"]
-    alfven_speed = magnetic_strength / np.sqrt(_MU0 * density)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        alfven_mach = np.divide(
-            wind_speed,
-            alfven_speed,
-            out=np.full_like(wind_speed, np.nan, dtype=float),
-            where=alfven_speed != 0.0,
-        )
+    wind_speed = resolve_wind_speed_si(smart_ds)
+    alfven_mach = np.asarray(smart_ds["M_A [none]"], dtype=float)
 
     grid = to_unstructured_grid(
-        sds,
+        smart_ds,
         point_data={
             "U [m/s]": wind_speed,
-            "B [T]": magnetic_strength,
-            "Rho [kg/m^3]": density,
-            "B_r [T]": state["B_r [T]"],
-            "c_A [m/s]": alfven_speed,
             "M_A [none]": alfven_mach,
         },
     )
@@ -65,30 +50,28 @@ def build_alfven_surface(
 
 
 def build_current_sheet_surface(
-    data: DataLike,
+    smart_ds: SmartDs,
     *,
     br_level: float = 0.0,
 ) -> tuple[pv.UnstructuredGrid, pv.PolyData]:
     """
     Build the current sheet ``B_r = br_level`` and attach MHD fields for coloring.
     """
-    sds = coerce_smart_ds(data)
-    state = _mhd_surface_state(sds)
+    wind_speed = resolve_wind_speed_si(smart_ds)
+    radial_magnetic_field = np.asarray(smart_ds["B_r [T]"], dtype=float)
 
     grid = to_unstructured_grid(
-        sds,
+        smart_ds,
         point_data={
-            "U [m/s]": state["U [m/s]"],
-            "B [T]": state["B [T]"],
-            "Rho [kg/m^3]": state["Rho [kg/m^3]"],
-            "B_r [T]": state["B_r [T]"],
+            "U [m/s]": wind_speed,
+            "B_r [T]": radial_magnetic_field,
         },
     )
     grid.set_active_scalars("B_r [T]")
 
     surface = grid.contour([float(br_level)], scalars="B_r [T]")
     if surface.n_points == 0 or surface.n_cells == 0:
-        finite = state["B_r [T]"][np.isfinite(state["B_r [T]"])]
+        finite = radial_magnetic_field[np.isfinite(radial_magnetic_field)]
         if finite.size:
             raise ValueError(
                 f"No current sheet found for B_r={br_level:g}; "
@@ -103,13 +86,13 @@ def build_current_sheet_surface(
 
 
 def current_sheet_orientation(
-    data: DataLike,
+    smart_ds: SmartDs,
     *,
     br_level: float = 0.0,
     rmin: float = 0.0,
     rmax: float = 30.0,
     max_points: int = 10000,
-) -> dict[str, object]:
+) -> float:
     """
     Fit the inner current sheet with an origin-passing plane and report its tilt.
 
@@ -124,29 +107,31 @@ def current_sheet_orientation(
     if int(max_points) <= 0:
         raise ValueError("max_points must be a positive integer")
 
-    _grid, surface = build_current_sheet_surface(data, br_level=br_level)
-    fit_points = _current_sheet_fit_points(
-        surface,
-        rmin=float(rmin),
-        rmax=float(rmax),
-        max_points=int(max_points),
-    )
-    normal = _fit_origin_plane_normal(fit_points)
-    inclination = float(np.degrees(np.arccos(np.clip(normal[2], -1.0, 1.0))))
-    return {
-        "normal [none]": normal,
-        "inclination [deg]": inclination,
-        "point_count": int(fit_points.shape[0]),
-        "rmin [R]": float(rmin),
-        "rmax [R]": float(rmax),
-    }
+    _grid, surface = build_current_sheet_surface(smart_ds, br_level=br_level)
+    points = np.asarray(surface.points, dtype=float)
+    radii = np.linalg.norm(points, axis=1)
+    fit_points = points[(float(rmin) < radii) & (radii < float(rmax))]
+    if fit_points.shape[0] < 3:
+        raise ValueError(
+            f"Current sheet plane fit requires at least 3 points in {rmin:g} < r < {rmax:g}; "
+            f"found {fit_points.shape[0]}"
+        )
+    stride = int(np.ceil(fit_points.shape[0] / int(max_points)))
+    fit_points = fit_points[::stride]
+    # Old batplotlib used an uncentered SVD, which fits a plane through the origin.
+    _u, _s, vh = np.linalg.svd(np.asarray(fit_points, dtype=float), full_matrices=False)
+    normal = np.asarray(vh[-1], dtype=float)
+    normal /= np.linalg.norm(normal)
+    if normal[2] < 0.0:
+        normal = -normal
+    return float(np.degrees(np.arccos(np.clip(normal[2], -1.0, 1.0))))
 
 
 def alfven_surface_averages(
-    data: DataLike,
+    smart_ds: SmartDs,
     *,
     mach_level: float = 1.0,
-) -> dict[str, float]:
+) -> tuple[float, float]:
     """
     Average Alfvén-surface radii over the projected stellar surface.
 
@@ -154,155 +139,127 @@ def alfven_surface_averages(
     radially onto the unit sphere, and area-average the original spherical radius
     and cylindrical radius on that projected surface.
     """
-    _grid, surface = build_alfven_surface(data, mach_level=mach_level)
-    projected, radii, cyl_radii = _project_surface_to_unit_sphere(surface)
+    _grid, surface = build_alfven_surface(smart_ds, mach_level=mach_level)
+    projected, radii, cyl_radii = project_surface_to_unit_sphere(surface)
     areas = np.asarray(projected.cell_data["Area"], dtype=float)
-    valid_radii = np.asarray(radii, dtype=float)
-    valid_radii = valid_radii[np.isfinite(valid_radii) & (valid_radii > 0.0)]
-    mean_radius = _projected_surface_average(projected, radii, radii, areas)
-    mean_cyl_radius = _projected_surface_average(projected, cyl_radii, radii, areas)
+    mean_radius = projected_surface_average(projected, radii, radii, areas)
+    mean_cyl_radius = projected_surface_average(projected, cyl_radii, radii, areas)
+    return float(mean_radius), float(mean_cyl_radius)
+
+
+def alfven_surface_radius_map(
+    smart_ds: SmartDs,
+    *,
+    n_polar: int,
+    n_azimuth: int,
+    mach_level: float = 1.0,
+) -> dict[str, np.ndarray]:
+    """
+    Sample the projected Alfvén surface on a regular ``(polar, azimuth)`` grid.
+    """
+    if int(n_polar) <= 0:
+        raise ValueError("n_polar must be a positive integer")
+    if int(n_azimuth) <= 0:
+        raise ValueError("n_azimuth must be a positive integer")
+
+    _grid, surface = build_alfven_surface(smart_ds, mach_level=mach_level)
+    projected, radii, _cyl_radii = project_surface_to_unit_sphere(surface)
+    projected.point_data["alfven_radius [R]"] = radii
+
+    angular_grid = PolarAzimuthalGrid(
+        np.linspace(0.0, np.pi, int(n_polar) + 1),
+        np.linspace(-np.pi, np.pi, int(n_azimuth) + 1),
+    )
+    polar = np.asarray(angular_grid.polar_centres, dtype=float).T
+    azimuth = np.asarray(angular_grid.azimuthal_centres, dtype=float).T
+    sample_points = angular_grid.centres_cartesian(radius=1.0).transpose(1, 0, 2).reshape(-1, 3)
+    point_tree = cKDTree(np.asarray(projected.points, dtype=float))
+    _distance, point_ids = point_tree.query(sample_points)
+    radius_map = np.asarray(radii, dtype=float)[np.asarray(point_ids, dtype=int)]
+
     return {
-        "average_alfven_radius [R]": float(mean_radius),
-        "average_alfven_cyl_radius [R]": float(mean_cyl_radius),
-        "min_alfven_radius [R]": float(np.min(valid_radii)),
-        "max_alfven_radius [R]": float(np.max(valid_radii)),
-        "cell_count": int(projected.n_cells),
+        "polar [rad]": polar,
+        "azimuth [rad]": azimuth,
+        "cell_solid_angle [sr]": np.asarray(angular_grid.cell_solid_angle, dtype=float),
+        "alfven_radius [R]": radius_map.reshape(polar.shape),
     }
 
 
 def plot_alfven_surface(
-    data: DataLike,
+    smart_ds: SmartDs,
     *,
     mach_level: float = 1.0,
-    cmap: str = "viridis",
     vmin: float | None = None,
     vmax: float | None = None,
     off_screen: bool = False,
-    show: bool = True,
     screenshot: str | PathLike[str] | None = None,
-) -> tuple[pv.Plotter, pv.PolyData, pv.UnstructuredGrid]:
+) -> tuple[pv.Plotter, pv.PolyData]:
     """
     Plot the Alfvén surface colored by wind speed.
     """
-    grid, surface = build_alfven_surface(data, mach_level=mach_level)
-    plotter = _plot_surface_with_wind_speed(
-        grid,
+    _grid, surface = build_alfven_surface(smart_ds, mach_level=mach_level)
+    plotter = surface_plotter_with_wind_speed(
         surface,
-        title=f"Alfven surface (M_A={mach_level:g})",
-        cmap=cmap,
         vmin=vmin,
         vmax=vmax,
         off_screen=off_screen,
-        show=show,
         screenshot=screenshot,
     )
-    return plotter, surface, grid
+    return plotter, surface
 
 
 def plot_current_sheet_surface(
-    data: DataLike,
+    smart_ds: SmartDs,
     *,
     br_level: float = 0.0,
-    cmap: str = "viridis",
     vmin: float | None = None,
     vmax: float | None = None,
     off_screen: bool = False,
-    show: bool = True,
     screenshot: str | PathLike[str] | None = None,
-) -> tuple[pv.Plotter, pv.PolyData, pv.UnstructuredGrid]:
+) -> tuple[pv.Plotter, pv.PolyData]:
     """
     Plot the current sheet ``B_r = br_level`` colored by wind speed.
     """
-    grid, surface = build_current_sheet_surface(data, br_level=br_level)
-    plotter = _plot_surface_with_wind_speed(
-        grid,
+    _grid, surface = build_current_sheet_surface(smart_ds, br_level=br_level)
+    plotter = surface_plotter_with_wind_speed(
         surface,
-        title=f"Current sheet (B_r={br_level:g})",
-        cmap=cmap,
         vmin=vmin,
         vmax=vmax,
         off_screen=off_screen,
-        show=show,
         screenshot=screenshot,
     )
-    return plotter, surface, grid
+    return plotter, surface
 
 
-def _mhd_surface_state(sds) -> dict[str, np.ndarray]:
-    points = np.asarray(sds.points, dtype=float)[:, :3]
-    magnetic_vector = resolve_magnetic_vector_si(sds)
-    return {
-        "U [m/s]": resolve_wind_speed_si(sds),
-        "B [T]": np.linalg.norm(magnetic_vector, axis=1),
-        "Rho [kg/m^3]": resolve_density_si(sds),
-        "B_r [T]": radial_component(magnetic_vector, points),
-    }
-
-
-def _plot_surface_with_wind_speed(
-    grid: pv.UnstructuredGrid,
+def surface_plotter_with_wind_speed(
     surface: pv.PolyData,
     *,
-    title: str,
-    cmap: str,
-    vmin: float | None,
-    vmax: float | None,
-    off_screen: bool,
-    show: bool,
-    screenshot: str | PathLike[str] | None,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    off_screen: bool = False,
+    screenshot: str | PathLike[str] | None = None,
 ) -> pv.Plotter:
     plotter = pv.Plotter(off_screen=off_screen)
-    plotter.add_mesh(grid.outline(), color="white", opacity=0.2, line_width=1.0)
     mesh_args = {
         "scalars": "U [m/s]",
-        "cmap": cmap,
+        "cmap": "viridis",
         "smooth_shading": True,
         "scalar_bar_args": readable_scalar_bar_args("U [m/s]"),
     }
-    clim = _scalar_limits(vmin, vmax)
-    if clim is not None:
-        mesh_args["clim"] = clim
+    if (vmin is None) ^ (vmax is None):
+        raise ValueError("vmin and vmax must be provided together")
+    if vmin is not None and vmax is not None:
+        mesh_args["clim"] = (float(vmin), float(vmax))
     plotter.add_mesh(surface, **mesh_args)
-    plotter.add_axes()
-    plotter.add_title(title)
 
-    if show or screenshot is not None:
-        plotter.show(screenshot=None if screenshot is None else str(screenshot), auto_close=False)
-
+    if screenshot is not None:
+        plotter.show(screenshot=str(screenshot), auto_close=False)
+    elif not off_screen:
+        plotter.show(auto_close=False)
     return plotter
 
 
-def _current_sheet_fit_points(
-    surface: pv.PolyData,
-    *,
-    rmin: float,
-    rmax: float,
-    max_points: int,
-) -> np.ndarray:
-    points = np.asarray(surface.points, dtype=float)
-    radii = np.linalg.norm(points, axis=1)
-    fit_points = points[(rmin < radii) & (radii < rmax)]
-    if fit_points.shape[0] < 3:
-        raise ValueError(
-            f"Current sheet plane fit requires at least 3 points in {rmin:g} < r < {rmax:g}; "
-            f"found {fit_points.shape[0]}"
-        )
-
-    stride = int(np.ceil(fit_points.shape[0] / max_points))
-    return fit_points[::stride]
-
-
-def _fit_origin_plane_normal(points: np.ndarray) -> np.ndarray:
-    # The old batplotlib fit used an uncentered SVD, which fits a plane through the origin.
-    _u, _s, vh = np.linalg.svd(np.asarray(points, dtype=float), full_matrices=False)
-    normal = np.asarray(vh[-1], dtype=float)
-    normal /= np.linalg.norm(normal)
-    if normal[2] < 0.0:
-        normal = -normal
-    return normal
-
-
-def _project_surface_to_unit_sphere(surface: pv.PolyData) -> tuple[pv.PolyData, np.ndarray, np.ndarray]:
+def project_surface_to_unit_sphere(surface: pv.PolyData) -> tuple[pv.PolyData, np.ndarray, np.ndarray]:
     projected = surface.triangulate(inplace=False).copy(deep=True)
     points = np.asarray(projected.points, dtype=float)
     radii = np.linalg.norm(points, axis=1)
@@ -317,7 +274,7 @@ def _project_surface_to_unit_sphere(surface: pv.PolyData) -> tuple[pv.PolyData, 
     return projected, radii, cyl_radii
 
 
-def _projected_surface_average(
+def projected_surface_average(
     projected: pv.PolyData,
     point_values: np.ndarray,
     point_radii: np.ndarray,
@@ -339,15 +296,8 @@ def _projected_surface_average(
     return float(np.sum(cell_values[valid] * cell_areas[valid]) / np.sum(cell_areas[valid]))
 
 
-def _scalar_limits(vmin: float | None, vmax: float | None) -> tuple[float, float] | None:
-    if (vmin is None) ^ (vmax is None):
-        raise ValueError("vmin and vmax must be provided together")
-    if vmin is not None and vmax is not None:
-        return float(vmin), float(vmax)
-    return None
-
-
 __all__ = [
+    "alfven_surface_radius_map",
     "alfven_surface_averages",
     "build_alfven_surface",
     "build_current_sheet_surface",
