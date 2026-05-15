@@ -275,59 +275,41 @@ class ParamIn:
 
     def stellar_params(self) -> OrderedDict:
         """Return parsed stellar parameters from `#STAR`, if present."""
-        for line_id, line in enumerate(self.flat_lines):
-            if not line or line.split()[0] != "#STAR":
-                continue
+        params = self.get_named_params("#STAR")
+        if not params:
+            return OrderedDict()
 
-            inline_name = line[len("#STAR"):].strip()
-            block: list[str] = []
-            next_id = line_id + 1
-            while next_id < len(self.flat_lines):
-                next_line = self.flat_lines[next_id]
-                if not next_line:
-                    next_id += 1
-                    continue
-                if next_line.startswith("!"):
-                    next_id += 1
-                    continue
-                if next_line.lower().startswith("begin session:"):
-                    next_id += 1
-                    continue
-                if next_line.startswith("#"):
-                    break
-                block.append(next_line)
-                next_id += 1
+        name = params.get("NameStar")
+        unlabeled_numeric_values = [
+            float(value)
+            for key, value in params.items()
+            if key.startswith("param_") and isinstance(value, (int, float)) and not isinstance(value, bool)
+        ]
 
-            if not block:
-                return OrderedDict()
+        def pick_numeric_value(index: int, *labels: str):
+            for label in labels:
+                value = params.get(label)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    return float(value)
+            if index < len(unlabeled_numeric_values):
+                return unlabeled_numeric_values[index]
+            return None
 
-            name = inline_name
-            value_index = 0
-            if not name:
-                first_value, _first_label = _split_value_and_label(block[0])
-                parsed_first = _parse_value_text(first_value)
-                if isinstance(parsed_first, str):
-                    name = parsed_first
-                    value_index = 1
+        radius_value = pick_numeric_value(0, "RadiusStar", "RadiusStar (in Solar radii)")
+        mass_value = pick_numeric_value(1, "MassStar", "MassStar (in Solar masses)")
+        period_value = pick_numeric_value(2, "RotationPeriodStar", "RotationPeriodStar (in days)")
+        if radius_value is None or mass_value is None or period_value is None:
+            return OrderedDict()
 
-            if len(block) < value_index + 3:
-                return OrderedDict()
-
-            radius_rsun = float(_parse_value_text(_split_value_and_label(block[value_index])[0]))
-            mass_msun = float(_parse_value_text(_split_value_and_label(block[value_index + 1])[0]))
-            period_days = float(_parse_value_text(_split_value_and_label(block[value_index + 2])[0]))
-
-            out = OrderedDict()
-            if name:
-                out["Star_name"] = name
-            out["Star_radius_m"] = radius_rsun * SOLAR_RADIUS_M
-            out["Star_mass_kg"] = mass_msun * SOLAR_MASS_KG
-            out["Star_rotational_period_s"] = period_days * day
-            out["Star_rotation_rate_rad_s"] = 2.0 * 3.141592653589793 / out["Star_rotational_period_s"]
-            log.debug("stellar_params parsed keys=%s", tuple(out))
-            return out
-
-        return OrderedDict()
+        out = OrderedDict()
+        if isinstance(name, str):
+            out["Star_name"] = name
+        out["Star_radius_m"] = float(radius_value) * SOLAR_RADIUS_M
+        out["Star_mass_kg"] = float(mass_value) * SOLAR_MASS_KG
+        out["Star_rotational_period_s"] = float(period_value) * day
+        out["Star_rotation_rate_rad_s"] = 2.0 * 3.141592653589793 / out["Star_rotational_period_s"]
+        log.debug("stellar_params parsed keys=%s", tuple(out))
+        return out
 
     def __str__(self) -> str:
         """Summarize the parsed config briefly."""
