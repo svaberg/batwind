@@ -67,7 +67,6 @@ def test_band_light_curve_si_is_periodic_and_phase_variable_for_asymmetric_emiss
         inclination_deg=90.0,
         image_n=64,
         side_length_r=4.0,
-        occultation=True,
     )
 
     np.testing.assert_allclose(out["radiant_intensity_w_sr"][0], out["radiant_intensity_w_sr"][2], rtol=1.0e-12)
@@ -87,38 +86,7 @@ def test_band_intensity_image_si_is_positive_for_visible_emission():
         phase_deg=0.0,
         image_n=64,
         side_length_r=4.0,
-        occultation=True,
     )
 
     assert out["image"].shape == (64, 64)
     assert np.sum(out["image"]) > 0.0
-
-
-def test_band_intensity_image_si_accepts_configurable_occulting_radius():
-    dataset = make_two_cell_equatorial_dataset()
-    sds = SmartDs(dataset)
-    sds.merge_computation_graph(build_batsrus_graph(tuple(dataset.variables), body_radius_m=1.0))
-    point_emissivity = np.concatenate([np.full(8, 2.0, dtype=float), np.full(8, 2.0, dtype=float)])
-
-    image_small_radius = band_intensity_image_si(
-        sds,
-        point_emissivity,
-        inclination_deg=90.0,
-        phase_deg=0.0,
-        image_n=64,
-        side_length_r=4.0,
-        occultation=True,
-        sphere_radius_r=0.5,
-    )
-    image_default_radius = band_intensity_image_si(
-        sds,
-        point_emissivity,
-        inclination_deg=90.0,
-        phase_deg=0.0,
-        image_n=64,
-        side_length_r=4.0,
-        occultation=True,
-        sphere_radius_r=1.0,
-    )
-
-    assert np.sum(image_small_radius["image"]) >= np.sum(image_default_radius["image"])
