@@ -10,7 +10,7 @@ import numpy as np
 
 from batread import Dataset
 from batwind.data.field_names import DEFAULT_XYZ_NAMES
-from batwind.param_in import stellar_aux_from_nearby_param_in
+from batwind.param_in import star_aux_from_nearby_param_in
 from batwind._smart_ds_resample import resample_smart_ds
 from batwind.recipes.batsrus import build_batsrus_graph
 from batwind.recipes.spherical import build_spherical_graph
@@ -79,19 +79,26 @@ class SmartDs:
             body_radius_m is not None,
         )
         raw = Dataset.from_file(str(file))
-        stellar_aux = stellar_aux_from_nearby_param_in(file)
-        if stellar_aux:
-            log.debug("SmartDs.from_file merged nearby PARAM.in aux keys=%d", len(stellar_aux))
+        star_aux = star_aux_from_nearby_param_in(file)
+        if star_aux is not None:
+            aux_values = {
+                "Star_name": star_aux.name,
+                "Star_radius_m": star_aux.radius,
+                "Star_mass_kg": star_aux.mass,
+                "Star_rotational_period_s": star_aux.rotational_period,
+                "Star_rotation_rate_rad_s": star_aux.rotation_rate,
+            }
+            log.debug("SmartDs.from_file merged nearby PARAM.in star aux keys=%d", len(aux_values))
             raw = Dataset(
                 raw.points,
                 raw.corners,
-                dict(raw.aux) | dict(stellar_aux),
+                dict(raw.aux) | aux_values,
                 raw.title,
                 raw.variables,
                 raw.zone,
             )
         else:
-            log.debug("SmartDs.from_file found no nearby PARAM.in stellar aux")
+            log.debug("SmartDs.from_file found no nearby PARAM.in star aux")
         if body_radius_m is None:
             radius_from_param = raw.aux.get("Star_radius_m")
             if radius_from_param is not None:

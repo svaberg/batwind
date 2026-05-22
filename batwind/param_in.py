@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import dataclass
 import logging
 from pathlib import Path
 
@@ -22,6 +23,26 @@ from scipy.constants import day
 from batwind.constants import SOLAR_MASS_KG
 from batwind.constants import SOLAR_RADIUS_M
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class StarParams:
+    """Star parameters parsed from one ordered `#STAR` block."""
+
+    name: str
+    radius: float
+    mass: float
+    rotational_period: float
+    rotation_rate: float
+
+
+@dataclass(frozen=True, slots=True)
+class TransitionRegionParams:
+    """Transition-region parameters parsed from one ordered `#TRANSITIONREGION` block."""
+
+    do_extend: bool
+    temperature: float
+    delta_temperature: float | None
 
 
 def _strip_lines(path) -> list[str]:
@@ -242,11 +263,11 @@ class ParamIn:
             out[key] = parse_parameter_value(value_text)
         return out
 
-    def stellar_params(self) -> OrderedDict:
-        """Return parsed stellar parameters from `#STAR`, if present."""
+    def star_params(self) -> StarParams | None:
+        """Return parsed star parameters from `#STAR`, if present."""
         block = self.get_command("#STAR")
         if block is None or len(block) < 4:
-            return OrderedDict()
+            return None
 
         name_text, _ = _split_value_and_label(block[0])
         radius_text, _ = _split_value_and_label(block[1])
@@ -258,15 +279,31 @@ class ParamIn:
         mass_msun = float(parse_parameter_value(mass_text))
         period_days = float(parse_parameter_value(period_text))
         period_seconds = period_days * day
+        return StarParams(
+            name=name,
+            radius=radius_rsun * SOLAR_RADIUS_M,
+            mass=mass_msun * SOLAR_MASS_KG,
+            rotational_period=period_seconds,
+            rotation_rate=2.0 * 3.141592653589793 / period_seconds,
+        )
 
-        return OrderedDict(
-            [
-                ("Star_name", name),
-                ("Star_radius_m", radius_rsun * SOLAR_RADIUS_M),
-                ("Star_mass_kg", mass_msun * SOLAR_MASS_KG),
-                ("Star_rotational_period_s", period_seconds),
-                ("Star_rotation_rate_rad_s", 2.0 * 3.141592653589793 / period_seconds),
-            ]
+    def transition_region_params(self) -> TransitionRegionParams | None:
+        """Return parsed transition-region parameters from `#TRANSITIONREGION`, if present."""
+        block = self.get_command("#TRANSITIONREGION")
+        if block is None or len(block) < 2:
+            return None
+
+        do_extend = self.get_param("#TRANSITIONREGION", 0)
+        temperature = float(self.get_param("#TRANSITIONREGION", 1))
+        delta_temperature = None
+        if do_extend:
+            if len(block) < 3:
+                return None
+            delta_temperature = float(self.get_param("#TRANSITIONREGION", 2))
+        return TransitionRegionParams(
+            do_extend=bool(do_extend),
+            temperature=temperature,
+            delta_temperature=delta_temperature,
         )
 
     def __str__(self) -> str:
@@ -282,9 +319,9 @@ class ParamIn:
         )
 
 
-def stellar_aux_from_nearby_param_in(file_path) -> OrderedDict:
-    """Read stellar aux values from the nearest available `PARAM.in`."""
+def star_aux_from_nearby_param_in(file_path) -> StarParams | None:
+    """Read star parameters from the nearest available `PARAM.in`."""
     param_path = find_param_in(file_path)
     if param_path is None:
-        return OrderedDict()
-    return ParamIn.from_file(param_path).stellar_params()
+        return None
+    return ParamIn.from_file(param_path).star_params()

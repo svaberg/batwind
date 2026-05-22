@@ -4,9 +4,11 @@ import logging
 import pytest
 
 from batwind.param_in import ParamIn
+from batwind.param_in import StarParams
+from batwind.param_in import TransitionRegionParams
 from batwind.param_in import flatten_includes
 from batwind.param_in import find_param_in
-from batwind.param_in import stellar_aux_from_nearby_param_in
+from batwind.param_in import star_aux_from_nearby_param_in
 
 
 SAMPLE_PARAM_IN = Path("sample_data/PARAM.in")
@@ -82,6 +84,45 @@ def test_split_value_and_label_only_splits_on_tab_or_three_spaces(tmp_path):
     assert params["FiveLabel"] == 5
 
 
+def test_transition_region_params_follow_batsrus_true_false_gate(tmp_path):
+    true_file = tmp_path / "PARAM_true.in"
+    true_file.write_text(
+        "\n".join(
+            [
+                "#TRANSITIONREGION",
+                "T\tDoExtendTransitionRegion",
+                "2.2e5\tTeTransitionRegionSi",
+                "1.0e1\tDeltaTeModSi",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    false_file = tmp_path / "PARAM_false.in"
+    false_file.write_text(
+        "\n".join(
+            [
+                "#TRANSITIONREGION",
+                "F\tDoExtendTransitionRegion",
+                "8.0e4\tTeTransitionRegionSi",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    true_params = ParamIn.from_file(true_file).transition_region_params()
+    false_params = ParamIn.from_file(false_file).transition_region_params()
+
+    assert isinstance(true_params, TransitionRegionParams)
+    assert true_params.do_extend is True
+    assert true_params.temperature == 2.2e5
+    assert true_params.delta_temperature == 1.0e1
+
+    assert isinstance(false_params, TransitionRegionParams)
+    assert false_params.do_extend is False
+    assert false_params.temperature == 8.0e4
+    assert false_params.delta_temperature is None
+
+
 @pytest.mark.pooch
 def test_param_in_parses_sample_file():
     config = ParamIn.from_file(SAMPLE_PARAM_IN)
@@ -100,18 +141,25 @@ def test_param_in_parses_sample_file():
 
 
 @pytest.mark.pooch
-def test_param_in_extracts_stellar_params_and_nearby_lookup():
+def test_param_in_extracts_star_and_transition_region_params():
     config = ParamIn.from_file(SAMPLE_PARAM_IN)
-    star = config.stellar_params()
-    nearby = stellar_aux_from_nearby_param_in(MAIN_SAMPLE)
+    star = config.star_params()
+    transition_region = config.transition_region_params()
+    nearby = star_aux_from_nearby_param_in(MAIN_SAMPLE)
 
-    assert star["Star_name"] == "tau Boötis"
-    assert star["Star_radius_m"] > 1.0e9
-    assert star["Star_mass_kg"] > 1.0e30
-    assert star["Star_rotational_period_s"] > 0.0
-    assert star["Star_rotation_rate_rad_s"] > 0.0
-    assert nearby["Star_name"] == star["Star_name"]
-    assert nearby["Star_radius_m"] == star["Star_radius_m"]
+    assert isinstance(star, StarParams)
+    assert isinstance(transition_region, TransitionRegionParams)
+    assert isinstance(nearby, StarParams)
+    assert star.name == "tau Boötis"
+    assert star.radius > 1.0e9
+    assert star.mass > 1.0e30
+    assert star.rotational_period > 0.0
+    assert star.rotation_rate > 0.0
+    assert transition_region.do_extend is True
+    assert transition_region.temperature == 2.2e5
+    assert transition_region.delta_temperature == 1.0e1
+    assert nearby.name == star.name
+    assert nearby.radius == star.radius
 
 
 def test_find_param_in_checks_parent_chain_and_logs_choice(tmp_path, caplog):
