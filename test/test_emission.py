@@ -113,6 +113,27 @@ def test_band_emissivity_si_tracks_si_units():
     np.testing.assert_allclose(emissivity, 8.0)
 
 
+def test_band_emissivity_si_applies_transition_region_weight():
+    dataset = make_one_cell_dataset((1.2, 0.0, 0.0), 0.4, variables=["X [R]", "Y [R]", "Z [R]", "te [K]", "Rho [kg/m^3]"])
+    dataset.points[:, 3] = 1.0e5
+    dataset.points[:, 4] = 2.0 * 1.67262192595e-27
+    dataset.aux = {
+        "DoExtendTransitionRegion": True,
+        "TeTransitionRegionSi": 2.2e5,
+        "DeltaTeModSi": 1.0e1,
+    }
+    sds = SmartDs(dataset)
+    sds.merge_computation_graph(build_batsrus_graph(tuple(dataset.variables), body_radius_m=1.0))
+
+    response_log10_temperature = np.array([4.0, 6.0], dtype=float)
+    band_response_values_si = np.array([2.0, 2.0], dtype=float)
+    emissivity = band_emissivity_si(sds, response_log10_temperature, band_response_values_si)
+    expected_weight = float(sds["transition_region_emission_weight [none]"][0])
+
+    np.testing.assert_allclose(emissivity, 8.0 * expected_weight)
+    np.testing.assert_allclose(sds["transition_region_emission_weight [none]"], np.full(8, expected_weight))
+
+
 def test_band_luminosity_si_matches_off_star_single_cell_formula():
     dataset = make_one_cell_dataset((1.0, 1.0, 1.0), 1.0, variables=["X [R]", "Y [R]", "Z [R]", "R [R]"])
     dataset.points[:, 3] = np.sqrt(np.sum(dataset.points[:, :3] ** 2, axis=1))

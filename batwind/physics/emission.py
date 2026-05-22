@@ -205,7 +205,10 @@ def band_emissivity_si(
         band_response_values_si,
     )
     electron_density_m3 = np.asarray(smart_ds["Ne [1/m^3]"], dtype=float)
-    return contribution_function_si * electron_density_m3**2
+    return contribution_function_si * electron_density_m3**2 * np.asarray(
+        smart_ds["transition_region_emission_weight [none]"],
+        dtype=float,
+    )
 
 
 def band_emissivity_from_response_table_si(

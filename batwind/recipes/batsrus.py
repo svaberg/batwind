@@ -267,6 +267,20 @@ def build_common_derived_graph():
         cost=0.08,
         metadata={"description": "Exterior unblocked solid angle outside one opaque stellar sphere"},
     )
+    graph.add(
+        "transition_region_emission_weight [none]",
+        lambda te: np.ones_like(np.asarray(te), dtype=float),
+        needs=["te [K]"],
+        cost=0.2,
+        metadata={"description": "No transition-region emission correction"},
+    )
+    graph.add(
+        "transition_region_emission_weight [none]",
+        lambda te, do_extend, tm, delta_tm: _transition_region_emission_weight(te, do_extend, tm, delta_tm),
+        needs=["te [K]", "DoExtendTransitionRegion", "TeTransitionRegionSi", "DeltaTeModSi"],
+        cost=0.12,
+        metadata={"description": "BATSRUS transition-region optically thin emission correction"},
+    )
 
     graph.add(
         "mass_flux [kg/m^2/s]",
@@ -341,6 +355,24 @@ def build_common_derived_graph():
         tuple(graph.fields()),
     )
     return graph
+
+
+def _transition_region_emission_weight(
+    temperature_k: np.ndarray,
+    do_extend: bool,
+    transition_temperature_k: float,
+    delta_temperature_k: float,
+) -> np.ndarray:
+    temperature_k = np.asarray(temperature_k, dtype=float)
+    if not bool(do_extend):
+        return np.ones_like(temperature_k, dtype=float)
+    fraction_spitzer = 0.5 * (
+        1.0 + np.tanh((temperature_k - float(transition_temperature_k)) / float(delta_temperature_k))
+    )
+    extension_factor = fraction_spitzer + (
+        1.0 - fraction_spitzer
+    ) * (float(transition_temperature_k) / temperature_k) ** 2.5
+    return 1.0 / extension_factor
 
 
 def _parse_var_name(name: str):

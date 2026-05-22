@@ -36,6 +36,9 @@ def test_smartds_from_file_accepts_pathlike():
 def test_smartds_from_file_merges_nearby_stellar_aux():
     sds = SmartDs.from_file(data_file(MAIN_SAMPLE))
     assert "Star_radius_m" in sds.raw.aux
+    assert sds.raw.aux["DoExtendTransitionRegion"] is True
+    assert float(sds.raw.aux["TeTransitionRegionSi"]) == 2.2e5
+    assert float(sds.raw.aux["DeltaTeModSi"]) == 1.0e1
 
 
 @pytest.mark.pooch

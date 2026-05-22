@@ -227,6 +227,25 @@ def test_batsrus_graph_computes_unblocked_solid_angle():
     np.testing.assert_allclose(out, expected)
 
 
+def test_batsrus_graph_computes_transition_region_emission_weight():
+    variables = ["te [K]"]
+    points = np.array([[1.0e5], [1.0e6]], dtype=float)
+    corners = np.empty((0, 0), dtype=int)
+    aux = {
+        "DoExtendTransitionRegion": True,
+        "TeTransitionRegionSi": 2.2e5,
+        "DeltaTeModSi": 1.0e1,
+    }
+    sds = SmartDs(Dataset(points, corners, aux=aux, title="te", variables=variables, zone="zte"))
+    sds.merge_computation_graph(build_batsrus_graph(tuple(sds.raw.variables)))
+
+    weight = np.asarray(sds["transition_region_emission_weight [none]"], dtype=float)
+
+    assert weight.shape == (2,)
+    assert weight[0] < 1.0
+    np.testing.assert_allclose(weight[1], 1.0)
+
+
 def test_spherical_graph_on_real_example_data():
     sds = SmartDs.from_file(str(EXAMPLE_PLT), spherical=True)
 
