@@ -55,17 +55,8 @@ def flatten_includes(file_path) -> list[str]:
 
 def find_param_in(file_path):
     """Find the nearest `PARAM.in`/`param.in` beside or above a data file."""
-    start = Path(file_path)
-    search_root = start if start.is_dir() else start.parent
-    search_dirs = [search_root]
-    if search_root.parent != search_root:
-        search_dirs.append(search_root.parent)
-    if search_root.parent.parent != search_root.parent:
-        search_dirs.append(search_root.parent.parent)
-    for directory in search_root.parents:
-        if directory not in search_dirs:
-            search_dirs.append(directory)
-    for directory in search_dirs:
+    search_root = Path(file_path).parent
+    for directory in (search_root, search_root.parent, search_root.parent.parent):
         for name in ("PARAM.in", "param.in"):
             candidate = directory / name
             if candidate.exists():
