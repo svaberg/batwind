@@ -10,7 +10,9 @@ import numpy as np
 
 from batread import Dataset
 from batwind.data.field_names import DEFAULT_XYZ_NAMES
-from batwind.param_in import star_aux_from_nearby_param_in
+from batwind.param_in import find_param_in
+from batwind.param_in import ParamIn
+from batwind.param_in import StarParams
 from batwind._smart_ds_resample import resample_smart_ds
 from batwind.recipes.batsrus import build_batsrus_graph
 from batwind.recipes.spherical import build_spherical_graph
@@ -79,7 +81,10 @@ class SmartDs:
             body_radius_m is not None,
         )
         raw = Dataset.from_file(str(file))
-        star_aux = star_aux_from_nearby_param_in(file)
+        star_aux = None
+        param_path = find_param_in(file)
+        if param_path is not None:
+            star_aux = StarParams.from_param_in(ParamIn.from_file(param_path))
         if star_aux is not None:
             aux_values = {
                 "Star_name": star_aux.name,

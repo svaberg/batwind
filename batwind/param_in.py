@@ -18,6 +18,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 import logging
 from pathlib import Path
+from typing import ClassVar
+from typing import Self
 
 from scipy.constants import day
 from batwind.constants import SOLAR_MASS_KG
@@ -25,24 +27,122 @@ from batwind.constants import SOLAR_RADIUS_M
 log = logging.getLogger(__name__)
 
 
+class ParamCommand:
+    """Base class for typed PARAM.in command readers."""
+
+    command: ClassVar[str]
+
+    @classmethod
+    def value_fields(
+        cls,
+        lines: list[str],
+        *,
+        exact: int | None = None,
+        minimum: int | None = None,
+    ) -> list[str]:
+        """Return ordered value fields, split from any trailing descriptive text."""
+        if exact is not None and len(lines) != exact:
+            raise ValueError(f"{cls.command} expects exactly {exact} parameter lines, got {len(lines)}")
+        if minimum is not None and len(lines) < minimum:
+            raise ValueError(f"{cls.command} expects at least {minimum} parameter lines, got {len(lines)}")
+        return [_split_value_and_label(line)[0] for line in lines]
+
+    @classmethod
+    def first_token_values(
+        cls,
+        lines: list[str],
+        *,
+        exact: int | None = None,
+        minimum: int | None = None,
+    ) -> list[object]:
+        """Return ordered first-token parameter values."""
+        value_fields = cls.value_fields(lines, exact=exact, minimum=minimum)
+        return [parse_parameter_value(str(value_text).split()[0]) for value_text in value_fields]
+
+    @classmethod
+    def from_param_in(cls, config: ParamIn, *, component="root", session=None, occurrence=-1) -> Self | None:
+        """Parse one command block from a `ParamIn` object."""
+        block = config.get_command(cls.command, component=component, session=session, occurrence=occurrence)
+        if block is None:
+            return None
+        return cls.from_lines(block)
+
+
 @dataclass(frozen=True, slots=True)
-class StarParams:
+class StarParams(ParamCommand):
     """Star parameters parsed from one ordered `#STAR` block."""
 
+    command: ClassVar[str] = "#STAR"
     name: str
     radius: float
     mass: float
     rotational_period: float
     rotation_rate: float
 
+    @classmethod
+    def from_lines(cls, lines: list[str]) -> StarParams | None:
+        """Parse one ordered `#STAR` block."""
+        value_fields = cls.value_fields(lines, exact=4)
+        name = parse_parameter_value(value_fields[0])
+        radius_rsun = float(parse_parameter_value(value_fields[1]))
+        mass_msun = float(parse_parameter_value(value_fields[2]))
+        period_days = float(parse_parameter_value(value_fields[3]))
+        period_seconds = period_days * day
+        return cls(
+            name=name,
+            radius=radius_rsun * SOLAR_RADIUS_M,
+            mass=mass_msun * SOLAR_MASS_KG,
+            rotational_period=period_seconds,
+            rotation_rate=2.0 * 3.141592653589793 / period_seconds,
+        )
+
 
 @dataclass(frozen=True, slots=True)
-class TransitionRegionParams:
+class TransitionRegionParams(ParamCommand):
     """Transition-region parameters parsed from one ordered `#TRANSITIONREGION` block."""
 
+    command: ClassVar[str] = "#TRANSITIONREGION"
     do_extend: bool
     temperature: float
     delta_temperature: float | None
+
+    @classmethod
+    def from_lines(cls, lines: list[str]) -> TransitionRegionParams | None:
+        """Parse one ordered `#TRANSITIONREGION` block."""
+        values = cls.first_token_values(lines, minimum=2)
+
+        do_extend = bool(values[0])
+        temperature = float(values[1])
+        delta_temperature = None
+        if do_extend:
+            if len(values) < 3:
+                raise ValueError(f"{cls.command} with DoExtendTransitionRegion=T expects 3 parameter lines")
+            delta_temperature = float(values[2])
+        return cls(
+            do_extend=do_extend,
+            temperature=temperature,
+            delta_temperature=delta_temperature,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PlasmaParams(ParamCommand):
+    """Plasma parameters parsed from one single-fluid `#PLASMA` block."""
+
+    command: ClassVar[str] = "#PLASMA"
+    fluid_mass_amu: float
+    ion_charge_e: float
+    electron_temperature_ratio: float
+
+    @classmethod
+    def from_lines(cls, lines: list[str]) -> PlasmaParams | None:
+        """Parse one single-fluid ordered `#PLASMA` block."""
+        values = cls.first_token_values(lines, exact=3)
+        return cls(
+            fluid_mass_amu=float(values[0]),
+            ion_charge_e=float(values[1]),
+            electron_temperature_ratio=float(values[2]),
+        )
 
 
 def _strip_lines(path) -> list[str]:
@@ -263,49 +363,6 @@ class ParamIn:
             out[key] = parse_parameter_value(value_text)
         return out
 
-    def star_params(self) -> StarParams | None:
-        """Return parsed star parameters from `#STAR`, if present."""
-        block = self.get_command("#STAR")
-        if block is None or len(block) < 4:
-            return None
-
-        name_text, _ = _split_value_and_label(block[0])
-        radius_text, _ = _split_value_and_label(block[1])
-        mass_text, _ = _split_value_and_label(block[2])
-        period_text, _ = _split_value_and_label(block[3])
-
-        name = parse_parameter_value(name_text)
-        radius_rsun = float(parse_parameter_value(radius_text))
-        mass_msun = float(parse_parameter_value(mass_text))
-        period_days = float(parse_parameter_value(period_text))
-        period_seconds = period_days * day
-        return StarParams(
-            name=name,
-            radius=radius_rsun * SOLAR_RADIUS_M,
-            mass=mass_msun * SOLAR_MASS_KG,
-            rotational_period=period_seconds,
-            rotation_rate=2.0 * 3.141592653589793 / period_seconds,
-        )
-
-    def transition_region_params(self) -> TransitionRegionParams | None:
-        """Return parsed transition-region parameters from `#TRANSITIONREGION`, if present."""
-        block = self.get_command("#TRANSITIONREGION")
-        if block is None or len(block) < 2:
-            return None
-
-        do_extend = self.get_param("#TRANSITIONREGION", 0)
-        temperature = float(self.get_param("#TRANSITIONREGION", 1))
-        delta_temperature = None
-        if do_extend:
-            if len(block) < 3:
-                return None
-            delta_temperature = float(self.get_param("#TRANSITIONREGION", 2))
-        return TransitionRegionParams(
-            do_extend=bool(do_extend),
-            temperature=temperature,
-            delta_temperature=delta_temperature,
-        )
-
     def __str__(self) -> str:
         """Summarize the parsed config briefly."""
         component_count = sum(len(session) for session in self.sessions)
@@ -317,11 +374,3 @@ class ParamIn:
             f"ParamIn(path={self.path.name!r}, sessions={self.num_sessions()}, "
             f"components={component_count}, command_blocks={command_count})"
         )
-
-
-def star_aux_from_nearby_param_in(file_path) -> StarParams | None:
-    """Read star parameters from the nearest available `PARAM.in`."""
-    param_path = find_param_in(file_path)
-    if param_path is None:
-        return None
-    return ParamIn.from_file(param_path).star_params()

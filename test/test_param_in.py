@@ -4,11 +4,11 @@ import logging
 import pytest
 
 from batwind.param_in import ParamIn
+from batwind.param_in import PlasmaParams
 from batwind.param_in import StarParams
 from batwind.param_in import TransitionRegionParams
 from batwind.param_in import flatten_includes
 from batwind.param_in import find_param_in
-from batwind.param_in import star_aux_from_nearby_param_in
 
 
 SAMPLE_PARAM_IN = Path("sample_data/PARAM.in")
@@ -109,8 +109,10 @@ def test_transition_region_params_follow_batsrus_true_false_gate(tmp_path):
         encoding="utf-8",
     )
 
-    true_params = ParamIn.from_file(true_file).transition_region_params()
-    false_params = ParamIn.from_file(false_file).transition_region_params()
+    true_config = ParamIn.from_file(true_file)
+    false_config = ParamIn.from_file(false_file)
+    true_params = TransitionRegionParams.from_param_in(true_config)
+    false_params = TransitionRegionParams.from_param_in(false_config)
 
     assert isinstance(true_params, TransitionRegionParams)
     assert true_params.do_extend is True
@@ -121,6 +123,96 @@ def test_transition_region_params_follow_batsrus_true_false_gate(tmp_path):
     assert false_params.do_extend is False
     assert false_params.temperature == 8.0e4
     assert false_params.delta_temperature is None
+
+
+def test_command_dataclasses_fail_loudly_on_malformed_present_blocks():
+    with pytest.raises(ValueError, match="#STAR expects exactly 4 parameter lines"):
+        StarParams.from_lines(
+            [
+                "tau Boötis\tNameStar",
+                "1.42\tRadiusStar",
+                "1.34\tMassStar",
+            ]
+        )
+
+    with pytest.raises(ValueError, match="#TRANSITIONREGION with DoExtendTransitionRegion=T expects 3 parameter lines"):
+        TransitionRegionParams.from_lines(
+            [
+                "T\tDoExtendTransitionRegion",
+                "2.2e5\tTeTransitionRegionSi",
+            ]
+        )
+
+    with pytest.raises(ValueError, match="#PLASMA expects exactly 3 parameter lines"):
+        PlasmaParams.from_lines(
+            [
+                "1.0\tFluidMass \\[amu\\]",
+                "1.0\tIonCharge \\[e\\]",
+                "1.0\tElectronTemperatureRatio",
+                "extra\tUnexpected",
+            ]
+        )
+
+
+def test_command_dataclasses_parse_their_own_lines():
+    star = StarParams.from_lines(
+        [
+            "tau Boötis\tNameStar",
+            "1.42\tRadiusStar",
+            "1.34\tMassStar",
+            "3.0\tRotationPeriodStar",
+        ]
+    )
+    transition_region = TransitionRegionParams.from_lines(
+        [
+            "T\tDoExtendTransitionRegion",
+            "2.2e5\tTeTransitionRegionSi",
+            "1.0e1\tDeltaTeModSi",
+        ]
+    )
+    plasma = PlasmaParams.from_lines(
+        [
+            "1.0\tFluidMass [amu]",
+            "1.0\tIonCharge [e]",
+            "1.0\tElectronTemperatureRatio",
+        ]
+    )
+
+    assert isinstance(star, StarParams)
+    assert star.name == "tau Boötis"
+    assert star.radius > 0.0
+    assert star.mass > 0.0
+    assert star.rotational_period > 0.0
+    assert star.rotation_rate > 0.0
+
+    assert isinstance(transition_region, TransitionRegionParams)
+    assert transition_region.do_extend is True
+    assert transition_region.temperature == 2.2e5
+    assert transition_region.delta_temperature == 1.0e1
+
+    assert isinstance(plasma, PlasmaParams)
+    assert plasma.fluid_mass_amu == 1.0
+    assert plasma.ion_charge_e == 1.0
+    assert plasma.electron_temperature_ratio == 1.0
+
+
+@pytest.mark.pooch
+def test_command_dataclasses_parse_their_own_param_in_blocks():
+    config = ParamIn.from_file(SAMPLE_PARAM_IN)
+    star = StarParams.from_param_in(config)
+    transition_region = TransitionRegionParams.from_param_in(config)
+    plasma = PlasmaParams.from_param_in(config)
+
+    assert isinstance(star, StarParams)
+    assert star.name == "tau Boötis"
+    assert isinstance(transition_region, TransitionRegionParams)
+    assert transition_region.do_extend is True
+    assert transition_region.temperature == 2.2e5
+    assert transition_region.delta_temperature == 1.0e1
+    assert isinstance(plasma, PlasmaParams)
+    assert plasma.fluid_mass_amu == 1.0
+    assert plasma.ion_charge_e == 1.0
+    assert plasma.electron_temperature_ratio == 1.0
 
 
 @pytest.mark.pooch
@@ -143,9 +235,11 @@ def test_param_in_parses_sample_file():
 @pytest.mark.pooch
 def test_param_in_extracts_star_and_transition_region_params():
     config = ParamIn.from_file(SAMPLE_PARAM_IN)
-    star = config.star_params()
-    transition_region = config.transition_region_params()
-    nearby = star_aux_from_nearby_param_in(MAIN_SAMPLE)
+    star = StarParams.from_param_in(config)
+    transition_region = TransitionRegionParams.from_param_in(config)
+    plasma = PlasmaParams.from_param_in(config)
+    nearby_param = find_param_in(MAIN_SAMPLE)
+    nearby = StarParams.from_param_in(ParamIn.from_file(nearby_param))
 
     assert isinstance(star, StarParams)
     assert isinstance(transition_region, TransitionRegionParams)
@@ -158,6 +252,10 @@ def test_param_in_extracts_star_and_transition_region_params():
     assert transition_region.do_extend is True
     assert transition_region.temperature == 2.2e5
     assert transition_region.delta_temperature == 1.0e1
+    assert isinstance(plasma, PlasmaParams)
+    assert plasma.fluid_mass_amu == 1.0
+    assert plasma.ion_charge_e == 1.0
+    assert plasma.electron_temperature_ratio == 1.0
     assert nearby.name == star.name
     assert nearby.radius == star.radius
 
