@@ -271,41 +271,30 @@ class ParamIn:
 
     def stellar_params(self) -> OrderedDict:
         """Return parsed stellar parameters from `#STAR`, if present."""
-        params = self.get_named_params("#STAR")
-        if not params:
+        block = self.get_command("#STAR")
+        if block is None or len(block) < 4:
             return OrderedDict()
 
-        name = params.get("NameStar")
-        unlabeled_numeric_values = [
-            float(value)
-            for key, value in params.items()
-            if key.startswith("param_") and isinstance(value, (int, float)) and not isinstance(value, bool)
-        ]
+        name_text, _ = _split_value_and_label(block[0])
+        radius_text, _ = _split_value_and_label(block[1])
+        mass_text, _ = _split_value_and_label(block[2])
+        period_text, _ = _split_value_and_label(block[3])
 
-        def pick_numeric_value(index: int, *labels: str):
-            for label in labels:
-                value = params.get(label)
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    return float(value)
-            if index < len(unlabeled_numeric_values):
-                return unlabeled_numeric_values[index]
-            return None
+        name = _parse_value_text(name_text)
+        radius_rsun = float(_parse_value_text(radius_text))
+        mass_msun = float(_parse_value_text(mass_text))
+        period_days = float(_parse_value_text(period_text))
+        period_seconds = period_days * day
 
-        radius_value = pick_numeric_value(0, "RadiusStar", "RadiusStar (in Solar radii)")
-        mass_value = pick_numeric_value(1, "MassStar", "MassStar (in Solar masses)")
-        period_value = pick_numeric_value(2, "RotationPeriodStar", "RotationPeriodStar (in days)")
-        if radius_value is None or mass_value is None or period_value is None:
-            return OrderedDict()
-
-        out = OrderedDict()
-        if isinstance(name, str):
-            out["Star_name"] = name
-        out["Star_radius_m"] = float(radius_value) * SOLAR_RADIUS_M
-        out["Star_mass_kg"] = float(mass_value) * SOLAR_MASS_KG
-        out["Star_rotational_period_s"] = float(period_value) * day
-        out["Star_rotation_rate_rad_s"] = 2.0 * 3.141592653589793 / out["Star_rotational_period_s"]
-        log.debug("stellar_params parsed keys=%s", tuple(out))
-        return out
+        return OrderedDict(
+            [
+                ("Star_name", name),
+                ("Star_radius_m", radius_rsun * SOLAR_RADIUS_M),
+                ("Star_mass_kg", mass_msun * SOLAR_MASS_KG),
+                ("Star_rotational_period_s", period_seconds),
+                ("Star_rotation_rate_rad_s", 2.0 * 3.141592653589793 / period_seconds),
+            ]
+        )
 
     def __str__(self) -> str:
         """Summarize the parsed config briefly."""
