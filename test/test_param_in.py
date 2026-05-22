@@ -60,6 +60,28 @@ def test_param_in_preserves_components_sessions_and_duplicate_commands(tmp_path)
     assert config.get_param("#GRID", 0, session=1) == 1
 
 
+def test_split_value_and_label_only_splits_on_tab_or_three_spaces(tmp_path):
+    config_file = tmp_path / "PARAM.in"
+    config_file.write_text(
+        "\n".join(
+            [
+                "#TEST",
+                "1 2  3",
+                "4   FourLabel",
+                "5\tFiveLabel",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = ParamIn.from_file(config_file)
+    params = config.get_named_params("#TEST")
+
+    assert params["param_0"] == "1 2  3"
+    assert params["FourLabel"] == 4
+    assert params["FiveLabel"] == 5
+
+
 @pytest.mark.pooch
 def test_param_in_parses_sample_file():
     config = ParamIn.from_file(SAMPLE_PARAM_IN)

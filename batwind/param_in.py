@@ -171,17 +171,13 @@ def _parse_value_text(text):
 def _split_value_and_label(line: str) -> tuple[str, str]:
     """Split one SWMF parameter line into a value field and a trailing label."""
     text = str(line).strip()
-    for index in range(len(text) - 1):
-        if text[index].isspace() and text[index + 1].isspace():
+    for separator in ("\t", "   "):
+        index = text.find(separator)
+        if index >= 0:
             value = text[:index].strip()
-            label = text[index + 1:].strip()
-            while label and label[0].isspace():
-                label = label[1:]
+            label = text[index + len(separator):].strip()
             return value, label
-    tokens = text.split()
-    if len(tokens) <= 1:
-        return text, ""
-    return tokens[0], " ".join(tokens[1:])
+    return text, ""
 
 
 class ParamIn:
