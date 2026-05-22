@@ -123,26 +123,8 @@ def parse_sessions(flat_lines) -> list[OrderedDict]:
     return sessions
 
 
-def _parse_scalar_token(text):
-    """Parse one first-token scalar using SWMF-style `T/F/int/float/string` rules."""
-    token = str(text).split()[0]
-    upper = token.upper()
-    if upper == "T":
-        return True
-    if upper == "F":
-        return False
-    try:
-        return int(token)
-    except ValueError:
-        pass
-    try:
-        return float(token)
-    except ValueError:
-        return token
-
-
-def _parse_value_text(text):
-    """Parse a full value field without discarding embedded spaces."""
+def parse_parameter_value(text):
+    """Parse one PARAM.in value field using SWMF-style scalar rules."""
     value_text = str(text).strip()
     upper = value_text.upper()
     if upper == "T":
@@ -244,7 +226,7 @@ class ParamIn:
         line = self.get_param_line(command, index, component=component, session=session, occurrence=occurrence)
         if line is None:
             return None
-        return _parse_scalar_token(line)
+        return parse_parameter_value(str(line).split()[0])
 
     def get_named_params(self, command, *, component="root", session=None, occurrence=-1) -> OrderedDict:
         """Return an ordered mapping from trailing labels to parsed values."""
@@ -257,7 +239,7 @@ class ParamIn:
             if not value_text:
                 continue
             key = label or f"param_{len(out)}"
-            out[key] = _parse_value_text(value_text)
+            out[key] = parse_parameter_value(value_text)
         return out
 
     def stellar_params(self) -> OrderedDict:
@@ -271,10 +253,10 @@ class ParamIn:
         mass_text, _ = _split_value_and_label(block[2])
         period_text, _ = _split_value_and_label(block[3])
 
-        name = _parse_value_text(name_text)
-        radius_rsun = float(_parse_value_text(radius_text))
-        mass_msun = float(_parse_value_text(mass_text))
-        period_days = float(_parse_value_text(period_text))
+        name = parse_parameter_value(name_text)
+        radius_rsun = float(parse_parameter_value(radius_text))
+        mass_msun = float(parse_parameter_value(mass_text))
+        period_days = float(parse_parameter_value(period_text))
         period_seconds = period_days * day
 
         return OrderedDict(
