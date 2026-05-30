@@ -91,8 +91,9 @@ class SmartDs:
             transition_region = TransitionRegionParams.from_param_in(param_in)
         aux_values = {}
         if star_aux is not None:
+            if star_aux.name is not None:
+                aux_values["Star_name"] = star_aux.name
             aux_values |= {
-                "Star_name": star_aux.name,
                 "Star_radius_m": star_aux.radius,
                 "Star_mass_kg": star_aux.mass,
                 "Star_rotational_period_s": star_aux.rotational_period,

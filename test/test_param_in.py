@@ -60,6 +60,7 @@ def test_param_in_preserves_components_sessions_and_duplicate_commands(tmp_path)
     assert config.get_param("#AMRREGION", 0, session=0, occurrence=0) == "Inner"
     assert config.get_param("#AMRREGION", 0, session=0, occurrence=1) == "Outer"
     assert config.get_param("#GRID", 0, session=1) == 1
+    assert config.get_command_header("#GRID", session=1) == "#GRID"
 
 
 def test_split_value_and_label_only_splits_on_tab_or_three_spaces(tmp_path):
@@ -194,6 +195,56 @@ def test_command_dataclasses_parse_their_own_lines():
     assert plasma.fluid_mass_amu == 1.0
     assert plasma.ion_charge_e == 1.0
     assert plasma.electron_temperature_ratio == 1.0
+
+
+def test_old_style_star_command_parses_name_from_header(tmp_path):
+    config_file = tmp_path / "PARAM.in"
+    config_file.write_text(
+        "\n".join(
+            [
+                "#STAR tau Boötis (Jeffers via Aline)",
+                "1.46\tRadiusStar (in Solar radii)",
+                "1.34\tMassStar (in Solar masses)",
+                "3.0\tRotationPeriodStar (in days)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = ParamIn.from_file(config_file)
+    star = StarParams.from_param_in(config)
+
+    assert config.get_command_header("#STAR") == "#STAR tau Boötis (Jeffers via Aline)"
+    assert isinstance(star, StarParams)
+    assert star.name == "tau Boötis (Jeffers via Aline)"
+    assert star.radius > 0.0
+    assert star.mass > 0.0
+    assert star.rotational_period > 0.0
+
+
+def test_old_style_star_command_allows_missing_name_in_header(tmp_path):
+    config_file = tmp_path / "PARAM.in"
+    config_file.write_text(
+        "\n".join(
+            [
+                "#STAR",
+                "1.46\tRadiusStar (in Solar radii)",
+                "1.34\tMassStar (in Solar masses)",
+                "3.0\tRotationPeriodStar (in days)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = ParamIn.from_file(config_file)
+    star = StarParams.from_param_in(config)
+
+    assert config.get_command_header("#STAR") == "#STAR"
+    assert isinstance(star, StarParams)
+    assert star.name is None
+    assert star.radius > 0.0
+    assert star.mass > 0.0
+    assert star.rotational_period > 0.0
 
 
 @pytest.mark.pooch

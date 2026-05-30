@@ -62,10 +62,17 @@ class ParamCommand:
     @classmethod
     def from_param_in(cls, config: ParamIn, *, component="root", session=None, occurrence=-1) -> Self | None:
         """Parse one command block from a `ParamIn` object."""
+        command_line = config.get_command_header(cls.command, component=component, session=session, occurrence=occurrence)
         block = config.get_command(cls.command, component=component, session=session, occurrence=occurrence)
         if block is None:
             return None
-        return cls.from_lines(block)
+        return cls.from_command_lines(command_line, block)
+
+    @classmethod
+    def from_command_lines(cls, command_line: str | None, lines: list[str]) -> Self | None:
+        """Parse one command header plus payload block."""
+        del command_line
+        return cls.from_lines(lines)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +80,7 @@ class StarParams(ParamCommand):
     """Star parameters parsed from one ordered `#STAR` block."""
 
     command: ClassVar[str] = "#STAR"
-    name: str
+    name: str | None
     radius: float
     mass: float
     rotational_period: float
@@ -87,6 +94,30 @@ class StarParams(ParamCommand):
         radius_rsun = float(parse_parameter_value(value_fields[1]))
         mass_msun = float(parse_parameter_value(value_fields[2]))
         period_days = float(parse_parameter_value(value_fields[3]))
+        period_seconds = period_days * day
+        return cls(
+            name=name,
+            radius=radius_rsun * SOLAR_RADIUS_M,
+            mass=mass_msun * SOLAR_MASS_KG,
+            rotational_period=period_seconds,
+            rotation_rate=2.0 * 3.141592653589793 / period_seconds,
+        )
+
+    @classmethod
+    def from_command_lines(cls, command_line: str | None, lines: list[str]) -> StarParams | None:
+        """Parse one `#STAR` command from either the old or new file form."""
+        if len(lines) == 4:
+            return cls.from_lines(lines)
+        if len(lines) != 3:
+            raise ValueError(f"{cls.command} expects either 3 or 4 parameter lines, got {len(lines)}")
+        if command_line is None:
+            raise ValueError(f"{cls.command} with 3 parameter lines requires a command header line")
+        header_tokens = str(command_line).split(maxsplit=1)
+        name = None if len(header_tokens) == 1 else parse_parameter_value(header_tokens[1])
+        value_fields = cls.value_fields(lines, exact=3)
+        radius_rsun = float(parse_parameter_value(value_fields[0]))
+        mass_msun = float(parse_parameter_value(value_fields[1]))
+        period_days = float(parse_parameter_value(value_fields[2]))
         period_seconds = period_days * day
         return cls(
             name=name,
@@ -192,10 +223,12 @@ def _new_session():
     return OrderedDict()
 
 
-def parse_sessions(flat_lines) -> list[OrderedDict]:
-    """Parse flat config lines into sessions, components, commands, and blocks."""
+def parse_sessions(flat_lines) -> tuple[list[OrderedDict], list[OrderedDict]]:
+    """Parse flat config lines into sessions, components, command headers, and blocks."""
     sessions = [_new_session()]
+    session_headers = [_new_session()]
     session = sessions[-1]
+    header_session = session_headers[-1]
     component_name = "root"
     current_command = None
 
@@ -212,6 +245,7 @@ def parse_sessions(flat_lines) -> list[OrderedDict]:
             component_name = tokens[1] if len(tokens) > 1 else "root"
             current_command = None
             session.setdefault(component_name, OrderedDict())
+            header_session.setdefault(component_name, OrderedDict())
             continue
 
         if line.startswith("#END_COMP"):
@@ -222,7 +256,9 @@ def parse_sessions(flat_lines) -> list[OrderedDict]:
         if line.startswith("#RUN") or line.startswith("#END"):
             if session:
                 session = _new_session()
+                header_session = _new_session()
                 sessions.append(session)
+                session_headers.append(header_session)
             component_name = "root"
             current_command = None
             continue
@@ -230,7 +266,9 @@ def parse_sessions(flat_lines) -> list[OrderedDict]:
         if line.startswith("#"):
             current_command = line.split()[0]
             component = session.setdefault(component_name, OrderedDict())
+            header_component = header_session.setdefault(component_name, OrderedDict())
             component.setdefault(current_command, []).append([])
+            header_component.setdefault(current_command, []).append(line)
             continue
 
         if current_command is None:
@@ -241,7 +279,8 @@ def parse_sessions(flat_lines) -> list[OrderedDict]:
 
     if sessions and not sessions[-1]:
         sessions.pop()
-    return sessions
+        session_headers.pop()
+    return sessions, session_headers
 
 
 def parse_parameter_value(text):
@@ -281,7 +320,7 @@ class ParamIn:
         """Parse a `PARAM.in` file immediately."""
         self.path = Path(file_path)
         self.flat_lines = flatten_includes(self.path)
-        self.sessions = parse_sessions(self.flat_lines)
+        self.sessions, self.session_headers = parse_sessions(self.flat_lines)
         log.debug(
             "ParamIn.__init__ path=%s flat_lines=%d sessions=%d",
             self.path,
@@ -316,6 +355,25 @@ class ParamIn:
         if not blocks:
             return None
         return blocks[occurrence]
+
+    def get_command_headers(self, command, *, component="root", session=None) -> list[str]:
+        """Return all full command header lines for one command in one session/component."""
+        if session is None:
+            headers: list[str] = []
+            for session_data in self.session_headers:
+                component_data = session_data.get(component, {})
+                headers.extend(component_data.get(command, ()))
+            return headers
+        session_data = self.session_headers[int(session)]
+        component_data = session_data.get(component, {})
+        return list(component_data.get(command, ()))
+
+    def get_command_header(self, command, *, component="root", session=None, occurrence=-1) -> str | None:
+        """Return one full command header line, defaulting to the most recent occurrence."""
+        headers = self.get_command_headers(command, component=component, session=session)
+        if not headers:
+            return None
+        return headers[occurrence]
 
     def get_param_line(
         self,
