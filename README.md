@@ -1,4 +1,7 @@
-# batwind
+<h1>
+<!-- <img src="https://raw.githubusercontent.com/svaberg/batcamp/main/assets/batcamp.png" alt="batwind"> -->
+<img src="assets/batwind.png" alt="batwind" height="128"> batwind 
+</h1>
 
 [![Python package](https://github.com/svaberg/batwind/actions/workflows/python-package.yml/badge.svg)](https://github.com/svaberg/batwind/actions/workflows/python-package.yml)
 [![Codacy Badge](https://app.codacy.com/project/badge/Grade/7b25b26a82334daf9c6224c25a40d4bb)](https://app.codacy.com/gh/svaberg/batwind/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)

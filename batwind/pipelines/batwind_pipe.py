@@ -3,7 +3,7 @@
 
 # It discovers supported input files in a working directory and runs a
 # per-file pipeline handler. Built-in handlers are `dummy`, `slice`, `shell`,
-# and `volume`.
+# `ua`, and `volume`.
 
 from __future__ import annotations
 
@@ -105,7 +105,7 @@ def discover_input_files(directory: str | Path = ".", *, recursive: bool = False
     """
     base = Path(directory)
     paths = base.rglob("*") if recursive else base.iterdir()
-    files = [path for path in paths if path.is_file() and path.suffix.lower() in {".plt", ".dat"}]
+    files = [path for path in paths if path.is_file() and path.suffix.lower() in {".plt", ".dat", ".bin"}]
     return sorted(files)
 
 
@@ -114,6 +114,8 @@ def pipeline_name_for_file(file_path: str | Path) -> str | None:
     Infer built-in pipeline from the input filename prefix.
     """
     file_name = Path(file_path).name.lower()
+    if file_name.startswith("3dall") and file_name.endswith(".bin"):
+        return "ua"
     if file_name.startswith("3d"):
         return "volume"
     if file_name.startswith("shl"):
@@ -139,6 +141,10 @@ def process_file_for_pipeline(pipeline_name: str) -> Callable[[Path], None]:
         from batwind.pipelines.shell import process_plt_file
 
         return process_plt_file
+    if pipeline_name == "ua":
+        from batwind.pipelines.ua import process_bin_file
+
+        return process_bin_file
     if pipeline_name == "volume":
         from batwind.pipelines.volume import process_plt_file
 
@@ -350,7 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pipeline",
         default=None,
-        choices=("dummy", "slice", "shell", "volume"),
+        choices=("dummy", "slice", "shell", "ua", "volume"),
         help="Built-in per-file pipeline to run (default: auto by filename prefix).",
     )
     parser.add_argument(

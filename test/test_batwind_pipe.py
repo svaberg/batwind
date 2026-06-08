@@ -22,12 +22,13 @@ def test_discover_input_files_finds_supported_extensions_in_current_directory(tm
     (tmp_path / "b.PLT").write_text("")
     (tmp_path / "c.dat").write_text("")
     (tmp_path / "d.DAT").write_text("")
+    (tmp_path / "3DALL_t000000_000000.bin").write_text("")
     (tmp_path / "ignore.txt").write_text("")
     (tmp_path / "nested").mkdir()
     (tmp_path / "nested" / "c.plt").write_text("")
 
     files = discover_input_files(tmp_path)
-    assert [path.name for path in files] == ["a.plt", "b.PLT", "c.dat", "d.DAT"]
+    assert [path.name for path in files] == ["3DALL_t000000_000000.bin", "a.plt", "b.PLT", "c.dat", "d.DAT"]
 
 
 def test_name_letter_counts_counts_alpha_only():
@@ -151,15 +152,32 @@ def test_run_batwind_pipe_offloads_large_numpy_array_to_artifact(tmp_path):
 
 def test_run_batwind_pipe_auto_routes_by_filename_prefix_and_records_failures(tmp_path):
     (tmp_path / "3d__one.plt").write_text("")
+    (tmp_path / "3DALL_t000000_000000.bin").write_text("")
     (tmp_path / "shl_one.plt").write_text("")
     (tmp_path / "x=0_one.plt").write_text("")
     (tmp_path / "misc.plt").write_text("")
 
     results = run_batwind_pipe(tmp_path)
 
-    assert sorted(path.name for path in results.discovered_files) == ["3d__one.plt", "shl_one.plt", "x=0_one.plt"]
-    assert sorted(path.name for path in results.failed_files) == ["3d__one.plt", "shl_one.plt", "x=0_one.plt"]
-    assert sorted(results.computed_results.keys()) == ["3d__one.plt", "shl_one.plt", "x=0_one.plt"]
+    assert sorted(path.name for path in results.discovered_files) == [
+        "3DALL_t000000_000000.bin",
+        "3d__one.plt",
+        "shl_one.plt",
+        "x=0_one.plt",
+    ]
+    assert sorted(path.name for path in results.failed_files) == [
+        "3DALL_t000000_000000.bin",
+        "3d__one.plt",
+        "shl_one.plt",
+        "x=0_one.plt",
+    ]
+    assert sorted(results.computed_results.keys()) == [
+        "3DALL_t000000_000000.bin",
+        "3d__one.plt",
+        "shl_one.plt",
+        "x=0_one.plt",
+    ]
+    assert (tmp_path / "batwind-pipe.ua.processed.json").exists()
     assert (tmp_path / "batwind-pipe.volume.processed.json").exists()
     assert (tmp_path / "batwind-pipe.shell.processed.json").exists()
     assert (tmp_path / "batwind-pipe.slice.processed.json").exists()
@@ -181,7 +199,7 @@ def test_run_batwind_pipe_explicit_pipeline_only_processes_matching_prefixes(tmp
 
 
 def test_batwind_pipe_main_accepts_builtin_pipeline_names_on_empty_directory(tmp_path):
-    for pipeline_name in ("dummy", "slice", "volume", "shell"):
+    for pipeline_name in ("dummy", "slice", "ua", "volume", "shell"):
         code = main([str(tmp_path), "--pipeline", pipeline_name, "--log-level", "ERROR", "--record-log-level", "ERROR"])
         state_file = tmp_path / f"batwind-pipe.{pipeline_name}.processed.json"
         payload = json.loads(state_file.read_text())
