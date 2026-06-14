@@ -5,12 +5,14 @@ import numpy as np
 
 from batread import Dataset
 
+from batwind.constants import SOLAR_RADIUS_M
 from batwind.recipes.batsrus import build_batsrus_graph
 from batwind.recipes.spherical import build_spherical_graph
 from batwind.smart_ds import SmartDs
 
 
 EXAMPLE_PLT = Path("examples/3d__var_1_n00000000.plt")
+SAMPLE_PLT_WITH_PARAM = Path("sample_data/3d__var_2_n00060005.plt")
 
 
 def explain_field(sds: SmartDs, name: str) -> str:
@@ -244,6 +246,40 @@ def test_batsrus_graph_computes_transition_region_emission_weight():
     assert weight.shape == (2,)
     assert weight[0] < 1.0
     np.testing.assert_allclose(weight[1], 1.0)
+
+
+def test_smartds_from_file_reads_sc_component_param_metadata(tmp_path):
+    run_dir = tmp_path / "run"
+    data_dir = run_dir / "SC" / "IO2"
+    data_dir.mkdir(parents=True)
+    data_path = data_dir / SAMPLE_PLT_WITH_PARAM.name
+    data_path.write_bytes(SAMPLE_PLT_WITH_PARAM.read_bytes())
+    (run_dir / "PARAM.in").write_text(
+        "\n".join(
+            [
+                "#GRID",
+                "1\tnRootBlock1",
+                "#BEGIN_COMP SC",
+                "#STAR sc star",
+                "1.5\tRadiusStar",
+                "1.2\tMassStar",
+                "5.0\tRotationPeriodStar",
+                "#TRANSITIONREGION",
+                "T\tDoExtendTransitionRegion",
+                "2.2e5\tTeTransitionRegionSi",
+                "1.0e1\tDeltaTeModSi",
+                "#END_COMP",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    sds = SmartDs.from_file(str(data_path), batsrus=True, spherical=False)
+
+    assert sds.raw.aux["Star_name"] == "sc star"
+    assert sds.raw.aux["DoExtendTransitionRegion"] is True
+    np.testing.assert_allclose(sds.raw.aux["Star_radius_m"], 1.5 * SOLAR_RADIUS_M)
+    np.testing.assert_allclose(sds["RBODY [m]"], 1.5 * SOLAR_RADIUS_M)
 
 
 def test_spherical_graph_on_real_example_data():

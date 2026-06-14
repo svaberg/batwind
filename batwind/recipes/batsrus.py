@@ -56,11 +56,11 @@ def build_batsrus_graph(
     unit_graph = build_unit_normalization_graph(variable_names, gamma=gamma, body_radius_m=body_radius_m)
     log.debug("build_batsrus_graph merging unit-normalization graph fields=%d", len(tuple(unit_graph.fields())))
     graph.merge(unit_graph)
-    vector_graph = build_vector_graph(tuple(variable_names) + tuple(graph.fields()))
-    log.debug("build_batsrus_graph merging vector graph fields=%d", len(tuple(vector_graph.fields())))
-    graph.merge(vector_graph)
     derived_graph = build_common_derived_graph()
     log.debug("build_batsrus_graph merging common-derived graph fields=%d", len(tuple(derived_graph.fields())))
+    vector_graph = build_vector_graph(tuple(variable_names) + tuple(graph.fields()) + tuple(derived_graph.fields()))
+    log.debug("build_batsrus_graph merging vector graph fields=%d", len(tuple(vector_graph.fields())))
+    graph.merge(vector_graph)
     graph.merge(derived_graph)
     log.debug("build_batsrus_graph complete fields=%d", len(tuple(graph.fields())))
     return graph
@@ -176,6 +176,28 @@ def build_coordinate_scale_graph(body_radius_m: float | None = None):
 def build_common_derived_graph():
     log.debug("build_common_derived_graph...")
     graph = griblet.Graph()
+
+    graph.add(
+        "E_mhd_x [V/m]",
+        lambda uy, uz, by, bz: np.asarray(uz) * np.asarray(by) - np.asarray(uy) * np.asarray(bz),
+        needs=["U_y [m/s]", "U_z [m/s]", "B_y [T]", "B_z [T]"],
+        cost=0.15,
+        metadata={"description": "Ideal-MHD electric field x-component: -(U x B)_x"},
+    )
+    graph.add(
+        "E_mhd_y [V/m]",
+        lambda ux, uz, bx, bz: np.asarray(ux) * np.asarray(bz) - np.asarray(uz) * np.asarray(bx),
+        needs=["U_x [m/s]", "U_z [m/s]", "B_x [T]", "B_z [T]"],
+        cost=0.15,
+        metadata={"description": "Ideal-MHD electric field y-component: -(U x B)_y"},
+    )
+    graph.add(
+        "E_mhd_z [V/m]",
+        lambda ux, uy, bx, by: np.asarray(uy) * np.asarray(bx) - np.asarray(ux) * np.asarray(by),
+        needs=["U_x [m/s]", "U_y [m/s]", "B_x [T]", "B_y [T]"],
+        cost=0.15,
+        metadata={"description": "Ideal-MHD electric field z-component: -(U x B)_z"},
+    )
 
     # Sound speed c_s [m/s]
     graph.add(
