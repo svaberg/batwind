@@ -198,7 +198,7 @@ def plot_alfven_surface(
     Plot the Alfvén surface colored by wind speed.
     """
     _grid, surface = build_alfven_surface(smart_ds, mach_level=mach_level)
-    plotter = surface_plotter_with_wind_speed(
+    plotter = plot_surface_with_scalar_shading(
         surface,
         vmin=vmin,
         vmax=vmax,
@@ -221,7 +221,7 @@ def plot_current_sheet_surface(
     Plot the current sheet ``B_r = br_level`` colored by wind speed.
     """
     _grid, surface = build_current_sheet_surface(smart_ds, br_level=br_level)
-    plotter = surface_plotter_with_wind_speed(
+    plotter = plot_surface_with_scalar_shading(
         surface,
         vmin=vmin,
         vmax=vmax,
@@ -231,7 +231,7 @@ def plot_current_sheet_surface(
     return plotter, surface
 
 
-def surface_plotter_with_wind_speed(
+def plot_surface_with_scalar_shading(
     surface: pv.PolyData,
     *,
     vmin: float | None = None,
@@ -239,12 +239,15 @@ def surface_plotter_with_wind_speed(
     off_screen: bool = False,
     screenshot: str | PathLike[str] | None = None,
 ) -> pv.Plotter:
+    scalar_name = surface.active_scalars_name
+    if scalar_name is None:
+        raise ValueError("Surface must define active scalars before plotting")
     plotter = pv.Plotter(off_screen=off_screen)
     mesh_args = {
-        "scalars": "U [m/s]",
+        "scalars": scalar_name,
         "cmap": "viridis",
         "smooth_shading": True,
-        "scalar_bar_args": readable_scalar_bar_args("U [m/s]"),
+        "scalar_bar_args": readable_scalar_bar_args(scalar_name),
     }
     if (vmin is None) ^ (vmax is None):
         raise ValueError("vmin and vmax must be provided together")
