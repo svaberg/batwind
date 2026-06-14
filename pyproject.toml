@@ -3,7 +3,7 @@ name = "batwind"
 description = "Process SWMF/BATSRUS output"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = ["scipy", "numpy", "matplotlib", "slugify", "colorlog", "batread>=1.1.0", "griblet>=0.3.0", "batcamp>=0.3.1"]
+dependencies = ["scipy", "numpy", "matplotlib", "pyvista", "slugify", "colorlog", "batread>=1.1.0", "griblet>=0.3.0", "batcamp>=0.3.1"]
 
 [project.scripts]
 batwind-pipe = "batwind.pipelines.batwind_pipe:main"
