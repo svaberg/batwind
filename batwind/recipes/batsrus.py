@@ -6,7 +6,7 @@ import re
 
 import griblet
 import numpy as np
-from scipy.constants import atomic_mass, mu_0
+from scipy.constants import atomic_mass, mu_0, proton_mass
 
 from batwind.recipes.vectors import build_vector_graph
 
@@ -56,11 +56,11 @@ def build_batsrus_graph(
     unit_graph = build_unit_normalization_graph(variable_names, gamma=gamma, body_radius_m=body_radius_m)
     log.debug("build_batsrus_graph merging unit-normalization graph fields=%d", len(tuple(unit_graph.fields())))
     graph.merge(unit_graph)
-    vector_graph = build_vector_graph(tuple(variable_names) + tuple(graph.fields()))
-    log.debug("build_batsrus_graph merging vector graph fields=%d", len(tuple(vector_graph.fields())))
-    graph.merge(vector_graph)
     derived_graph = build_common_derived_graph()
     log.debug("build_batsrus_graph merging common-derived graph fields=%d", len(tuple(derived_graph.fields())))
+    vector_graph = build_vector_graph(tuple(variable_names) + tuple(graph.fields()) + tuple(derived_graph.fields()))
+    log.debug("build_batsrus_graph merging vector graph fields=%d", len(tuple(vector_graph.fields())))
+    graph.merge(vector_graph)
     graph.merge(derived_graph)
     log.debug("build_batsrus_graph complete fields=%d", len(tuple(graph.fields())))
     return graph
@@ -177,6 +177,28 @@ def build_common_derived_graph():
     log.debug("build_common_derived_graph...")
     graph = griblet.Graph()
 
+    graph.add(
+        "E_mhd_x [V/m]",
+        lambda uy, uz, by, bz: np.asarray(uz) * np.asarray(by) - np.asarray(uy) * np.asarray(bz),
+        needs=["U_y [m/s]", "U_z [m/s]", "B_y [T]", "B_z [T]"],
+        cost=0.15,
+        metadata={"description": "Ideal-MHD electric field x-component: -(U x B)_x"},
+    )
+    graph.add(
+        "E_mhd_y [V/m]",
+        lambda ux, uz, bx, bz: np.asarray(ux) * np.asarray(bz) - np.asarray(uz) * np.asarray(bx),
+        needs=["U_x [m/s]", "U_z [m/s]", "B_x [T]", "B_z [T]"],
+        cost=0.15,
+        metadata={"description": "Ideal-MHD electric field y-component: -(U x B)_y"},
+    )
+    graph.add(
+        "E_mhd_z [V/m]",
+        lambda ux, uy, bx, by: np.asarray(uy) * np.asarray(bx) - np.asarray(ux) * np.asarray(by),
+        needs=["U_x [m/s]", "U_y [m/s]", "B_x [T]", "B_y [T]"],
+        cost=0.15,
+        metadata={"description": "Ideal-MHD electric field z-component: -(U x B)_z"},
+    )
+
     # Sound speed c_s [m/s]
     graph.add(
         "c_s [m/s]",
@@ -242,6 +264,44 @@ def build_common_derived_graph():
         needs=["P [Pa]", "P_b [Pa]"],
         cost=0.12,
         metadata={"description": "Plasma beta"},
+    )
+    graph.add(
+        "Ne [1/m^3]",
+        lambda rho: np.asarray(rho) / proton_mass,
+        needs=["Rho [kg/m^3]"],
+        cost=0.12,
+        metadata={"description": "Electron number density assuming ionized hydrogen"},
+    )
+    graph.add(
+        "Ne [1/cm^3]",
+        lambda ne_m3: 1.0e-6 * np.asarray(ne_m3),
+        needs=["Ne [1/m^3]"],
+        cost=0.02,
+        metadata={"description": "Electron number density in cgs units"},
+    )
+
+    # `unblocked_solid_angle [sr]` is the exterior visibility factor
+    # `omega(r) = 2*pi*(1 + sqrt(1 - r^-2))` for `r >= 1` in stellar-radius units.
+    graph.add(
+        "unblocked_solid_angle [sr]",
+        lambda r: 2.0 * np.pi * (1.0 + np.sqrt(np.clip(1.0 - np.asarray(r) ** -2, 0.0, None))),
+        needs=["R [R]"],
+        cost=0.08,
+        metadata={"description": "Exterior unblocked solid angle outside one opaque stellar sphere"},
+    )
+    graph.add(
+        "transition_region_emission_weight [none]",
+        lambda te: np.ones_like(np.asarray(te), dtype=float),
+        needs=["te [K]"],
+        cost=0.2,
+        metadata={"description": "No transition-region emission correction"},
+    )
+    graph.add(
+        "transition_region_emission_weight [none]",
+        lambda te, do_extend, tm, delta_tm: _transition_region_emission_weight(te, do_extend, tm, delta_tm),
+        needs=["te [K]", "DoExtendTransitionRegion", "TeTransitionRegionSi", "DeltaTeModSi"],
+        cost=0.12,
+        metadata={"description": "BATSRUS transition-region optically thin emission correction"},
     )
 
     graph.add(
@@ -317,6 +377,24 @@ def build_common_derived_graph():
         tuple(graph.fields()),
     )
     return graph
+
+
+def _transition_region_emission_weight(
+    temperature_k: np.ndarray,
+    do_extend: bool,
+    transition_temperature_k: float,
+    delta_temperature_k: float,
+) -> np.ndarray:
+    temperature_k = np.asarray(temperature_k, dtype=float)
+    if not bool(do_extend):
+        return np.ones_like(temperature_k, dtype=float)
+    fraction_spitzer = 0.5 * (
+        1.0 + np.tanh((temperature_k - float(transition_temperature_k)) / float(delta_temperature_k))
+    )
+    extension_factor = fraction_spitzer + (
+        1.0 - fraction_spitzer
+    ) * (float(transition_temperature_k) / temperature_k) ** 2.5
+    return 1.0 / extension_factor
 
 
 def _parse_var_name(name: str):

@@ -10,6 +10,7 @@ from .spherical import (
     radial_component,
     spherical_vector_components,
 )
+from .ua import build_ua_graph
 from .vectors import build_vector_graph
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "build_unit_normalization_graph",
     "build_vector_graph",
     "build_spherical_graph",
+    "build_ua_graph",
     "cartesian_to_spherical_angles",
     "radial_component",
     "spherical_vector_components",

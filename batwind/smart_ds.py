@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from collections.abc import Sequence
 import logging
+from pathlib import Path
 from time import perf_counter
 
 import griblet
@@ -10,12 +11,35 @@ import numpy as np
 
 from batread import Dataset
 from batwind.data.field_names import DEFAULT_XYZ_NAMES
-from batwind.param_in import stellar_aux_from_nearby_param_in
+from batwind.param_in import find_param_in
+from batwind.param_in import ParamIn
+from batwind.param_in import StarParams
+from batwind.param_in import TransitionRegionParams
 from batwind._smart_ds_resample import resample_smart_ds
 from batwind.recipes.batsrus import build_batsrus_graph
 from batwind.recipes.spherical import build_spherical_graph
 
 log = logging.getLogger(__name__)
+
+
+def _infer_param_component(param_in: ParamIn, file_path: str | Path, command: str, *, default="root") -> str:
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for session in param_in.sessions:
+        for component_name, component_data in session.items():
+            if component_name in seen or command not in component_data:
+                continue
+            candidates.append(component_name)
+            seen.add(component_name)
+    if not candidates:
+        return str(default)
+    parts = {part.casefold() for part in Path(file_path).resolve().parent.parts}
+    for component_name in candidates:
+        if str(component_name).casefold() in parts:
+            return component_name
+    if default in candidates:
+        return str(default)
+    return candidates[0]
 
 
 class SmartDs:
@@ -79,19 +103,55 @@ class SmartDs:
             body_radius_m is not None,
         )
         raw = Dataset.from_file(str(file))
-        stellar_aux = stellar_aux_from_nearby_param_in(file)
-        if stellar_aux:
-            log.debug("SmartDs.from_file merged nearby PARAM.in aux keys=%d", len(stellar_aux))
+        star_aux = None
+        transition_region = None
+        param_path = find_param_in(file)
+        if param_path is not None:
+            param_in = ParamIn.from_file(param_path)
+            star_component = _infer_param_component(param_in, file, StarParams.command)
+            transition_region_component = _infer_param_component(
+                param_in,
+                file,
+                TransitionRegionParams.command,
+            )
+            log.debug(
+                "SmartDs.from_file inferred PARAM.in components star=%s transition_region=%s",
+                star_component,
+                transition_region_component,
+            )
+            star_aux = StarParams.from_param_in(param_in, component=star_component)
+            transition_region = TransitionRegionParams.from_param_in(
+                param_in,
+                component=transition_region_component,
+            )
+        aux_values = {}
+        if star_aux is not None:
+            if star_aux.name is not None:
+                aux_values["Star_name"] = star_aux.name
+            aux_values |= {
+                "Star_radius_m": star_aux.radius,
+                "Star_mass_kg": star_aux.mass,
+                "Star_rotational_period_s": star_aux.rotational_period,
+                "Star_rotation_rate_rad_s": star_aux.rotation_rate,
+            }
+        if transition_region is not None:
+            aux_values |= {
+                "DoExtendTransitionRegion": transition_region.do_extend,
+                "TeTransitionRegionSi": transition_region.temperature,
+                "DeltaTeModSi": transition_region.delta_temperature,
+            }
+        if aux_values:
+            log.debug("SmartDs.from_file merged nearby PARAM.in aux keys=%d", len(aux_values))
             raw = Dataset(
                 raw.points,
                 raw.corners,
-                dict(raw.aux) | dict(stellar_aux),
+                dict(raw.aux) | aux_values,
                 raw.title,
                 raw.variables,
                 raw.zone,
             )
         else:
-            log.debug("SmartDs.from_file found no nearby PARAM.in stellar aux")
+            log.debug("SmartDs.from_file found no nearby PARAM.in aux")
         if body_radius_m is None:
             radius_from_param = raw.aux.get("Star_radius_m")
             if radius_from_param is not None:

@@ -22,6 +22,8 @@ def test_process_plt_file_records_3d_quantities_and_writes_surface_plots(tmp_pat
     monkeypatch.setattr(volume, "SURFACE_VIEWPORT_DPI", 120)
     monkeypatch.setattr(volume, "SURFACE_VIEWPORT_RENDER_SIZE", (900, 900))
     monkeypatch.setattr(volume, "LOS_GRID_N", 64)
+    monkeypatch.setattr(volume, "LOS_EXAMPLE_GRID_N", 48)
+    monkeypatch.setattr(volume, "CORONAL_EMISSION_TOTALS_IMAGE_N", 64)
     original_from_file = SmartDs.from_file
     monkeypatch.setattr(
         volume.SmartDs,

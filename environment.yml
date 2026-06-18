@@ -25,6 +25,8 @@ dependencies:
   - pytest-cov
   - flake8
   - pooch
+  - colorcet
+  - colorspacious
     
   #
   # This package is used for Codacy integration

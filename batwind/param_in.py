@@ -15,13 +15,165 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import dataclass
 import logging
 from pathlib import Path
+from typing import ClassVar
+from typing import Self
 
 from scipy.constants import day
 from batwind.constants import SOLAR_MASS_KG
 from batwind.constants import SOLAR_RADIUS_M
 log = logging.getLogger(__name__)
+
+
+class ParamCommand:
+    """Base class for typed PARAM.in command readers."""
+
+    command: ClassVar[str]
+
+    @classmethod
+    def value_fields(
+        cls,
+        lines: list[str],
+        *,
+        exact: int | None = None,
+        minimum: int | None = None,
+    ) -> list[str]:
+        """Return ordered value fields, split from any trailing descriptive text."""
+        if exact is not None and len(lines) != exact:
+            raise ValueError(f"{cls.command} expects exactly {exact} parameter lines, got {len(lines)}")
+        if minimum is not None and len(lines) < minimum:
+            raise ValueError(f"{cls.command} expects at least {minimum} parameter lines, got {len(lines)}")
+        return [_split_value_and_label(line)[0] for line in lines]
+
+    @classmethod
+    def first_token_values(
+        cls,
+        lines: list[str],
+        *,
+        exact: int | None = None,
+        minimum: int | None = None,
+    ) -> list[object]:
+        """Return ordered first-token parameter values."""
+        value_fields = cls.value_fields(lines, exact=exact, minimum=minimum)
+        return [parse_parameter_value(str(value_text).split()[0]) for value_text in value_fields]
+
+    @classmethod
+    def from_param_in(cls, config: ParamIn, *, component="root", session=None, occurrence=-1) -> Self | None:
+        """Parse one command block from a `ParamIn` object."""
+        command_line = config.get_command_header(cls.command, component=component, session=session, occurrence=occurrence)
+        block = config.get_command(cls.command, component=component, session=session, occurrence=occurrence)
+        if block is None:
+            return None
+        return cls.from_command_lines(command_line, block)
+
+    @classmethod
+    def from_command_lines(cls, command_line: str | None, lines: list[str]) -> Self | None:
+        """Parse one command header plus payload block."""
+        del command_line
+        return cls.from_lines(lines)
+
+
+@dataclass(frozen=True, slots=True)
+class StarParams(ParamCommand):
+    """Star parameters parsed from one ordered `#STAR` block."""
+
+    command: ClassVar[str] = "#STAR"
+    name: str | None
+    radius: float
+    mass: float
+    rotational_period: float
+    rotation_rate: float
+
+    @classmethod
+    def from_lines(cls, lines: list[str]) -> StarParams | None:
+        """Parse one ordered `#STAR` block."""
+        value_fields = cls.value_fields(lines, exact=4)
+        name = parse_parameter_value(value_fields[0])
+        radius_rsun = float(parse_parameter_value(value_fields[1]))
+        mass_msun = float(parse_parameter_value(value_fields[2]))
+        period_days = float(parse_parameter_value(value_fields[3]))
+        period_seconds = period_days * day
+        return cls(
+            name=name,
+            radius=radius_rsun * SOLAR_RADIUS_M,
+            mass=mass_msun * SOLAR_MASS_KG,
+            rotational_period=period_seconds,
+            rotation_rate=2.0 * 3.141592653589793 / period_seconds,
+        )
+
+    @classmethod
+    def from_command_lines(cls, command_line: str | None, lines: list[str]) -> StarParams | None:
+        """Parse one `#STAR` command from either the old or new file form."""
+        if len(lines) == 4:
+            return cls.from_lines(lines)
+        if len(lines) != 3:
+            raise ValueError(f"{cls.command} expects either 3 or 4 parameter lines, got {len(lines)}")
+        if command_line is None:
+            raise ValueError(f"{cls.command} with 3 parameter lines requires a command header line")
+        header_tokens = str(command_line).split(maxsplit=1)
+        name = None if len(header_tokens) == 1 else parse_parameter_value(header_tokens[1])
+        value_fields = cls.value_fields(lines, exact=3)
+        radius_rsun = float(parse_parameter_value(value_fields[0]))
+        mass_msun = float(parse_parameter_value(value_fields[1]))
+        period_days = float(parse_parameter_value(value_fields[2]))
+        period_seconds = period_days * day
+        return cls(
+            name=name,
+            radius=radius_rsun * SOLAR_RADIUS_M,
+            mass=mass_msun * SOLAR_MASS_KG,
+            rotational_period=period_seconds,
+            rotation_rate=2.0 * 3.141592653589793 / period_seconds,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TransitionRegionParams(ParamCommand):
+    """Transition-region parameters parsed from one ordered `#TRANSITIONREGION` block."""
+
+    command: ClassVar[str] = "#TRANSITIONREGION"
+    do_extend: bool
+    temperature: float
+    delta_temperature: float | None
+
+    @classmethod
+    def from_lines(cls, lines: list[str]) -> TransitionRegionParams | None:
+        """Parse one ordered `#TRANSITIONREGION` block."""
+        values = cls.first_token_values(lines, minimum=2)
+
+        do_extend = bool(values[0])
+        temperature = float(values[1])
+        delta_temperature = None
+        if do_extend:
+            if len(values) < 3:
+                raise ValueError(f"{cls.command} with DoExtendTransitionRegion=T expects 3 parameter lines")
+            delta_temperature = float(values[2])
+        return cls(
+            do_extend=do_extend,
+            temperature=temperature,
+            delta_temperature=delta_temperature,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PlasmaParams(ParamCommand):
+    """Plasma parameters parsed from one single-fluid `#PLASMA` block."""
+
+    command: ClassVar[str] = "#PLASMA"
+    fluid_mass_amu: float
+    ion_charge_e: float
+    electron_temperature_ratio: float
+
+    @classmethod
+    def from_lines(cls, lines: list[str]) -> PlasmaParams | None:
+        """Parse one single-fluid ordered `#PLASMA` block."""
+        values = cls.first_token_values(lines, exact=3)
+        return cls(
+            fluid_mass_amu=float(values[0]),
+            ion_charge_e=float(values[1]),
+            electron_temperature_ratio=float(values[2]),
+        )
 
 
 def _strip_lines(path) -> list[str]:
@@ -55,17 +207,8 @@ def flatten_includes(file_path) -> list[str]:
 
 def find_param_in(file_path):
     """Find the nearest `PARAM.in`/`param.in` beside or above a data file."""
-    start = Path(file_path)
-    search_root = start if start.is_dir() else start.parent
-    search_dirs = [search_root]
-    if search_root.parent != search_root:
-        search_dirs.append(search_root.parent)
-    if search_root.parent.parent != search_root.parent:
-        search_dirs.append(search_root.parent.parent)
-    for directory in search_root.parents:
-        if directory not in search_dirs:
-            search_dirs.append(directory)
-    for directory in search_dirs:
+    search_root = Path(file_path).parent
+    for directory in (search_root, search_root.parent, search_root.parent.parent):
         for name in ("PARAM.in", "param.in"):
             candidate = directory / name
             if candidate.exists():
@@ -80,10 +223,12 @@ def _new_session():
     return OrderedDict()
 
 
-def parse_sessions(flat_lines) -> list[OrderedDict]:
-    """Parse flat config lines into sessions, components, commands, and blocks."""
+def parse_sessions(flat_lines) -> tuple[list[OrderedDict], list[OrderedDict]]:
+    """Parse flat config lines into sessions, components, command headers, and blocks."""
     sessions = [_new_session()]
+    session_headers = [_new_session()]
     session = sessions[-1]
+    header_session = session_headers[-1]
     component_name = "root"
     current_command = None
 
@@ -100,6 +245,7 @@ def parse_sessions(flat_lines) -> list[OrderedDict]:
             component_name = tokens[1] if len(tokens) > 1 else "root"
             current_command = None
             session.setdefault(component_name, OrderedDict())
+            header_session.setdefault(component_name, OrderedDict())
             continue
 
         if line.startswith("#END_COMP"):
@@ -110,7 +256,9 @@ def parse_sessions(flat_lines) -> list[OrderedDict]:
         if line.startswith("#RUN") or line.startswith("#END"):
             if session:
                 session = _new_session()
+                header_session = _new_session()
                 sessions.append(session)
+                session_headers.append(header_session)
             component_name = "root"
             current_command = None
             continue
@@ -118,7 +266,9 @@ def parse_sessions(flat_lines) -> list[OrderedDict]:
         if line.startswith("#"):
             current_command = line.split()[0]
             component = session.setdefault(component_name, OrderedDict())
+            header_component = header_session.setdefault(component_name, OrderedDict())
             component.setdefault(current_command, []).append([])
+            header_component.setdefault(current_command, []).append(line)
             continue
 
         if current_command is None:
@@ -129,29 +279,12 @@ def parse_sessions(flat_lines) -> list[OrderedDict]:
 
     if sessions and not sessions[-1]:
         sessions.pop()
-    return sessions
+        session_headers.pop()
+    return sessions, session_headers
 
 
-def _parse_scalar_token(text):
-    """Parse one first-token scalar using SWMF-style `T/F/int/float/string` rules."""
-    token = str(text).split()[0]
-    upper = token.upper()
-    if upper == "T":
-        return True
-    if upper == "F":
-        return False
-    try:
-        return int(token)
-    except ValueError:
-        pass
-    try:
-        return float(token)
-    except ValueError:
-        return token
-
-
-def _parse_value_text(text):
-    """Parse a full value field without discarding embedded spaces."""
+def parse_parameter_value(text):
+    """Parse one PARAM.in value field using SWMF-style scalar rules."""
     value_text = str(text).strip()
     upper = value_text.upper()
     if upper == "T":
@@ -171,17 +304,13 @@ def _parse_value_text(text):
 def _split_value_and_label(line: str) -> tuple[str, str]:
     """Split one SWMF parameter line into a value field and a trailing label."""
     text = str(line).strip()
-    for index in range(len(text) - 1):
-        if text[index].isspace() and text[index + 1].isspace():
+    for separator in ("\t", "   "):
+        index = text.find(separator)
+        if index >= 0:
             value = text[:index].strip()
-            label = text[index + 1:].strip()
-            while label and label[0].isspace():
-                label = label[1:]
+            label = text[index + len(separator):].strip()
             return value, label
-    tokens = text.split()
-    if len(tokens) <= 1:
-        return text, ""
-    return tokens[0], " ".join(tokens[1:])
+    return text, ""
 
 
 class ParamIn:
@@ -191,7 +320,7 @@ class ParamIn:
         """Parse a `PARAM.in` file immediately."""
         self.path = Path(file_path)
         self.flat_lines = flatten_includes(self.path)
-        self.sessions = parse_sessions(self.flat_lines)
+        self.sessions, self.session_headers = parse_sessions(self.flat_lines)
         log.debug(
             "ParamIn.__init__ path=%s flat_lines=%d sessions=%d",
             self.path,
@@ -227,6 +356,25 @@ class ParamIn:
             return None
         return blocks[occurrence]
 
+    def get_command_headers(self, command, *, component="root", session=None) -> list[str]:
+        """Return all full command header lines for one command in one session/component."""
+        if session is None:
+            headers: list[str] = []
+            for session_data in self.session_headers:
+                component_data = session_data.get(component, {})
+                headers.extend(component_data.get(command, ()))
+            return headers
+        session_data = self.session_headers[int(session)]
+        component_data = session_data.get(component, {})
+        return list(component_data.get(command, ()))
+
+    def get_command_header(self, command, *, component="root", session=None, occurrence=-1) -> str | None:
+        """Return one full command header line, defaulting to the most recent occurrence."""
+        headers = self.get_command_headers(command, component=component, session=session)
+        if not headers:
+            return None
+        return headers[occurrence]
+
     def get_param_line(
         self,
         command,
@@ -257,7 +405,7 @@ class ParamIn:
         line = self.get_param_line(command, index, component=component, session=session, occurrence=occurrence)
         if line is None:
             return None
-        return _parse_scalar_token(line)
+        return parse_parameter_value(str(line).split()[0])
 
     def get_named_params(self, command, *, component="root", session=None, occurrence=-1) -> OrderedDict:
         """Return an ordered mapping from trailing labels to parsed values."""
@@ -270,64 +418,8 @@ class ParamIn:
             if not value_text:
                 continue
             key = label or f"param_{len(out)}"
-            out[key] = _parse_value_text(value_text)
+            out[key] = parse_parameter_value(value_text)
         return out
-
-    def stellar_params(self) -> OrderedDict:
-        """Return parsed stellar parameters from `#STAR`, if present."""
-        for line_id, line in enumerate(self.flat_lines):
-            if not line or line.split()[0] != "#STAR":
-                continue
-
-            inline_name = line[len("#STAR"):].strip()
-            block: list[str] = []
-            next_id = line_id + 1
-            while next_id < len(self.flat_lines):
-                next_line = self.flat_lines[next_id]
-                if not next_line:
-                    next_id += 1
-                    continue
-                if next_line.startswith("!"):
-                    next_id += 1
-                    continue
-                if next_line.lower().startswith("begin session:"):
-                    next_id += 1
-                    continue
-                if next_line.startswith("#"):
-                    break
-                block.append(next_line)
-                next_id += 1
-
-            if not block:
-                return OrderedDict()
-
-            name = inline_name
-            value_index = 0
-            if not name:
-                first_value, _first_label = _split_value_and_label(block[0])
-                parsed_first = _parse_value_text(first_value)
-                if isinstance(parsed_first, str):
-                    name = parsed_first
-                    value_index = 1
-
-            if len(block) < value_index + 3:
-                return OrderedDict()
-
-            radius_rsun = float(_parse_value_text(_split_value_and_label(block[value_index])[0]))
-            mass_msun = float(_parse_value_text(_split_value_and_label(block[value_index + 1])[0]))
-            period_days = float(_parse_value_text(_split_value_and_label(block[value_index + 2])[0]))
-
-            out = OrderedDict()
-            if name:
-                out["Star_name"] = name
-            out["Star_radius_m"] = radius_rsun * SOLAR_RADIUS_M
-            out["Star_mass_kg"] = mass_msun * SOLAR_MASS_KG
-            out["Star_rotational_period_s"] = period_days * day
-            out["Star_rotation_rate_rad_s"] = 2.0 * 3.141592653589793 / out["Star_rotational_period_s"]
-            log.debug("stellar_params parsed keys=%s", tuple(out))
-            return out
-
-        return OrderedDict()
 
     def __str__(self) -> str:
         """Summarize the parsed config briefly."""
@@ -340,11 +432,3 @@ class ParamIn:
             f"ParamIn(path={self.path.name!r}, sessions={self.num_sessions()}, "
             f"components={component_count}, command_blocks={command_count})"
         )
-
-
-def stellar_aux_from_nearby_param_in(file_path) -> OrderedDict:
-    """Read stellar aux values from the nearest available `PARAM.in`."""
-    param_path = find_param_in(file_path)
-    if param_path is None:
-        return OrderedDict()
-    return ParamIn.from_file(param_path).stellar_params()

@@ -5,11 +5,14 @@ import numpy as np
 
 from batread import Dataset
 
+from batwind.constants import SOLAR_RADIUS_M
+from batwind.recipes.batsrus import build_batsrus_graph
 from batwind.recipes.spherical import build_spherical_graph
 from batwind.smart_ds import SmartDs
 
 
 EXAMPLE_PLT = Path("examples/3d__var_1_n00000000.plt")
+SAMPLE_PLT_WITH_PARAM = Path("sample_data/3d__var_2_n00060005.plt")
 
 
 def explain_field(sds: SmartDs, name: str) -> str:
@@ -191,6 +194,92 @@ def test_spherical_graph_computes_geometry_and_vector_components():
     np.testing.assert_allclose(b_r[0], 1.0)
     np.testing.assert_allclose(b_p[0], -3.0)
     np.testing.assert_allclose(b_a[0], 2.0)
+
+
+def test_batsrus_graph_computes_electron_density_fields():
+    variables = ["Rho [kg/m^3]"]
+    points = np.array([[1.0], [2.5]], dtype=float)
+    corners = np.empty((0, 0), dtype=int)
+    sds = SmartDs(Dataset(points, corners, aux={}, title="rho", variables=variables, zone="zrho"))
+    sds.merge_computation_graph(build_batsrus_graph(tuple(sds.raw.variables)))
+
+    ne_m3 = np.asarray(sds["Ne [1/m^3]"])
+    ne_cm3 = np.asarray(sds["Ne [1/cm^3]"])
+
+    np.testing.assert_allclose(ne_m3, points[:, 0] / 1.67262192595e-27)
+    np.testing.assert_allclose(ne_cm3, 1.0e-6 * ne_m3)
+
+
+def test_batsrus_graph_computes_unblocked_solid_angle():
+    variables = ["X [R]", "Y [R]", "Z [R]", "R [R]"]
+    points = np.array(
+        [
+            [1.0, 0.0, 0.0, 1.0],
+            [2.0, 0.0, 0.0, 2.0],
+        ],
+        dtype=float,
+    )
+    corners = np.empty((0, 0), dtype=int)
+    sds = SmartDs(Dataset(points, corners, aux={}, title="geom", variables=variables, zone="zgeom"))
+    sds.merge_computation_graph(build_batsrus_graph(tuple(sds.raw.variables)))
+
+    out = np.asarray(sds["unblocked_solid_angle [sr]"], dtype=float)
+    expected = 2.0 * np.pi * (1.0 + np.sqrt(np.clip(1.0 - np.array([1.0, 2.0]) ** -2, 0.0, None)))
+
+    np.testing.assert_allclose(out, expected)
+
+
+def test_batsrus_graph_computes_transition_region_emission_weight():
+    variables = ["te [K]"]
+    points = np.array([[1.0e5], [1.0e6]], dtype=float)
+    corners = np.empty((0, 0), dtype=int)
+    aux = {
+        "DoExtendTransitionRegion": True,
+        "TeTransitionRegionSi": 2.2e5,
+        "DeltaTeModSi": 1.0e1,
+    }
+    sds = SmartDs(Dataset(points, corners, aux=aux, title="te", variables=variables, zone="zte"))
+    sds.merge_computation_graph(build_batsrus_graph(tuple(sds.raw.variables)))
+
+    weight = np.asarray(sds["transition_region_emission_weight [none]"], dtype=float)
+
+    assert weight.shape == (2,)
+    assert weight[0] < 1.0
+    np.testing.assert_allclose(weight[1], 1.0)
+
+
+def test_smartds_from_file_reads_sc_component_param_metadata(tmp_path):
+    run_dir = tmp_path / "run"
+    data_dir = run_dir / "SC" / "IO2"
+    data_dir.mkdir(parents=True)
+    data_path = data_dir / SAMPLE_PLT_WITH_PARAM.name
+    data_path.write_bytes(SAMPLE_PLT_WITH_PARAM.read_bytes())
+    (run_dir / "PARAM.in").write_text(
+        "\n".join(
+            [
+                "#GRID",
+                "1\tnRootBlock1",
+                "#BEGIN_COMP SC",
+                "#STAR sc star",
+                "1.5\tRadiusStar",
+                "1.2\tMassStar",
+                "5.0\tRotationPeriodStar",
+                "#TRANSITIONREGION",
+                "T\tDoExtendTransitionRegion",
+                "2.2e5\tTeTransitionRegionSi",
+                "1.0e1\tDeltaTeModSi",
+                "#END_COMP",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    sds = SmartDs.from_file(str(data_path), batsrus=True, spherical=False)
+
+    assert sds.raw.aux["Star_name"] == "sc star"
+    assert sds.raw.aux["DoExtendTransitionRegion"] is True
+    np.testing.assert_allclose(sds.raw.aux["Star_radius_m"], 1.5 * SOLAR_RADIUS_M)
+    np.testing.assert_allclose(sds["RBODY [m]"], 1.5 * SOLAR_RADIUS_M)
 
 
 def test_spherical_graph_on_real_example_data():
