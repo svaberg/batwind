@@ -45,7 +45,7 @@ def process_plt_file(file_path: str | Path) -> None:
     fig, _axes, _cbar = plot_xz_slice_tripcolor_with_cross_quantiles(
         smart_ds,
         var="Rho [kg/m^3]",
-        norm=LogNorm(),
+        tripcolor_kwargs={"shading": "flat", "norm": LogNorm()},
     )
     out_path = output_dir / f"{prefix}.slices.rho.png"
     fig.savefig(out_path)
@@ -56,7 +56,11 @@ def process_plt_file(file_path: str | Path) -> None:
     # Start: make, save, and record the speed slice.
     stage_start = perf_counter()
     log.info("Computing speed slice...")
-    fig, _axes, _cbar = plot_xz_slice_tripcolor_with_cross_quantiles(smart_ds, var="U [m/s]")
+    fig, _axes, _cbar = plot_xz_slice_tripcolor_with_cross_quantiles(
+        smart_ds,
+        var="U [m/s]",
+        tripcolor_kwargs={"shading": "flat"},
+    )
     out_path = output_dir / f"{prefix}.slices.u.png"
     fig.savefig(out_path)
     plt.close(fig)
@@ -69,7 +73,7 @@ def process_plt_file(file_path: str | Path) -> None:
     fig, _axes, _cbar = plot_xz_slice_tripcolor_with_cross_quantiles(
         smart_ds,
         var="B [T]",
-        norm=LogNorm(),
+        tripcolor_kwargs={"shading": "flat", "norm": LogNorm()},
     )
     out_path = output_dir / f"{prefix}.slices.b.png"
     fig.savefig(out_path)
@@ -83,8 +87,11 @@ def process_plt_file(file_path: str | Path) -> None:
     fig, _axes, _cbar = plot_xz_slice_tripcolor_with_cross_quantiles(
         smart_ds,
         var="B_r [T]",
-        cmap=BR_CMAP,
-        norm=SymLogNorm(linthresh=B_R_SYMLOG_LINTHRESH_T, base=10),
+        tripcolor_kwargs={
+            "shading": "flat",
+            "cmap": BR_CMAP,
+            "norm": SymLogNorm(linthresh=B_R_SYMLOG_LINTHRESH_T, base=10),
+        },
     )
     out_path = output_dir / f"{prefix}.slices.br.png"
     fig.savefig(out_path)

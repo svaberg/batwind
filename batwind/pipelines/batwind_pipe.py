@@ -53,9 +53,10 @@ def configure_logger(level_name: str) -> None:
     Configure the root logger for human-readable pipeline logs on stdout.
     """
     level = getattr(logging, str(level_name).upper())
+    internal_level = level if level <= logging.DEBUG else logging.WARNING
     logger = logging.getLogger()
     logger.handlers.clear()
-    logger.setLevel(level)
+    logger.setLevel(logging.DEBUG)
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(level)
@@ -76,10 +77,12 @@ def configure_logger(level_name: str) -> None:
 
     logger.addHandler(handler)
 
-    # Pin noisy third-party libraries to saner defaults while letting batwind
-    # follow the active root/capture configuration.
+    # Keep human-facing pipeline progress at the requested level while hiding
+    # internal graph/recipe chatter unless DEBUG was explicitly requested.
+    logging.getLogger("batwind").setLevel(internal_level)
+    logging.getLogger("batwind.pipelines").setLevel(level)
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
-    logging.getLogger("griblet").setLevel(logging.INFO)
+    logging.getLogger("griblet").setLevel(internal_level)
 
 
 def configure_recorder(level_name: str = "WARNING") -> None:

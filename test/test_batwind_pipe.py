@@ -13,6 +13,7 @@ from batwind.pipelines.dummy_pipeline import name_profile_payload
 from batwind.pipelines.dummy_pipeline import name_waveform_payload
 from batwind.pipelines.dummy_pipeline import process_plt_file
 from batwind.pipelines.batwind_pipe import discover_input_files
+from batwind.pipelines.batwind_pipe import configure_logger
 from batwind.pipelines.batwind_pipe import main
 from batwind.pipelines.batwind_pipe import run_batwind_pipe
 
@@ -205,3 +206,20 @@ def test_batwind_pipe_main_accepts_builtin_pipeline_names_on_empty_directory(tmp
         payload = json.loads(state_file.read_text())
         assert code == 0
         assert payload["processed_files"] == []
+
+
+def test_configure_logger_limits_info_to_pipeline_loggers():
+    configure_logger("INFO")
+
+    assert logging.getLogger("batwind.pipelines.slice").getEffectiveLevel() == logging.INFO
+    assert logging.getLogger("batwind.smart_ds").getEffectiveLevel() == logging.WARNING
+    assert logging.getLogger("batwind.recipes.batsrus").getEffectiveLevel() == logging.WARNING
+    assert logging.getLogger("griblet.graph").getEffectiveLevel() == logging.WARNING
+
+
+def test_configure_logger_debug_enables_internal_loggers():
+    configure_logger("DEBUG")
+
+    assert logging.getLogger("batwind.pipelines.slice").getEffectiveLevel() == logging.DEBUG
+    assert logging.getLogger("batwind.smart_ds").getEffectiveLevel() == logging.DEBUG
+    assert logging.getLogger("griblet.graph").getEffectiveLevel() == logging.DEBUG

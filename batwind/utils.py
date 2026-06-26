@@ -34,11 +34,13 @@ def triangles(ds, uname=None, vname=None):
 
     pu = ds[uname]
     pv = ds[vname]
+    raw = getattr(ds, "raw", ds)
+    corners = raw.corners
 
-    if ds.corners.shape[1] != 4:
+    if corners.shape[1] != 4:
         raise ValueError("Can only triangulate a 2D dataset with 4 corners per element")
 
-    triangles = np.vstack((ds.corners[:, [0, 1, 2]], ds.corners[:, [2, 3, 0]]))
+    triangles = np.vstack((corners[:, [0, 1, 2]], corners[:, [2, 3, 0]]))
     log.debug("triangles u=%s v=%s triangles=%d", uname, vname, triangles.shape[0])
     return tri.Triangulation(pu, pv, triangles)
 
