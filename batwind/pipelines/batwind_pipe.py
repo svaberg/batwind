@@ -2,8 +2,8 @@
 """
 
 # It discovers supported input files in a working directory and runs a
-# per-file pipeline handler. Built-in handlers are `dummy`, `slice`, `shell`,
-# `ua`, and `volume`.
+# per-file pipeline handler. Built-in handlers are `dummy`, `log`, `slice`,
+# `shell`, `ua`, and `volume`.
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from batwind.pipelines.recorder import DEFAULT_ARRAY_OFFLOAD_MIN_BYTES
 from batwind.pipelines.recorder import DEFAULT_JSON_WARN_BYTES
 from batwind.pipelines.recorder import BatwindPipeResults
 from batwind.pipelines.recorder import BatwindRecordHandler
+from batwind.pipelines.movie import write_recorded_png_movies
 from batwind.pipelines.recorder import load_state
 from batwind.pipelines.recorder import relative_file_key
 from batwind.pipelines.recorder import save_state
@@ -108,7 +109,7 @@ def discover_input_files(directory: str | Path = ".", *, recursive: bool = False
     """
     base = Path(directory)
     paths = base.rglob("*") if recursive else base.iterdir()
-    files = [path for path in paths if path.is_file() and path.suffix.lower() in {".plt", ".dat", ".bin"}]
+    files = [path for path in paths if path.is_file() and path.suffix.lower() in {".plt", ".dat", ".bin", ".log"}]
     return sorted(files)
 
 
@@ -117,6 +118,8 @@ def pipeline_name_for_file(file_path: str | Path) -> str | None:
     Infer built-in pipeline from the input filename prefix.
     """
     file_name = Path(file_path).name.lower()
+    if file_name.startswith("log_n") and file_name.endswith(".log"):
+        return "log"
     if file_name.startswith("3dall") and file_name.endswith(".bin"):
         return "ua"
     if file_name.startswith("3d"):
@@ -136,6 +139,10 @@ def process_file_for_pipeline(pipeline_name: str) -> Callable[[Path], None]:
         from batwind.pipelines.dummy_pipeline import process_plt_file
 
         return process_plt_file
+    if pipeline_name == "log":
+        from batwind.pipelines.log import process_log_file
+
+        return process_log_file
     if pipeline_name == "slice":
         from batwind.pipelines.slice import process_plt_file
 
@@ -262,6 +269,10 @@ def run_batwind_pipe(
                 computed_results=known_computed_by_pipeline[state_pipeline_name],
                 json_warn_bytes=int(json_warn_bytes),
             )
+            if state_pipeline_name != "log":
+                results.movie_outputs.extend(
+                    write_recorded_png_movies(directory_path, known_computed_by_pipeline[state_pipeline_name])
+                )
         log.debug("run_batwind_pipe complete with no selected files")
         return results
 
@@ -337,6 +348,9 @@ def run_batwind_pipe(
         len(results.failed_files),
         len(results.skipped_files),
     )
+    for state_pipeline_name, pipeline_results in known_computed_by_pipeline.items():
+        if state_pipeline_name != "log":
+            results.movie_outputs.extend(write_recorded_png_movies(directory_path, pipeline_results))
     return results
 
 
@@ -359,7 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pipeline",
         default=None,
-        choices=("dummy", "slice", "shell", "ua", "volume"),
+        choices=("dummy", "log", "slice", "shell", "ua", "volume"),
         help="Built-in per-file pipeline to run (default: auto by filename prefix).",
     )
     parser.add_argument(

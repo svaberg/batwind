@@ -16,6 +16,7 @@ from batwind.pipelines.batwind_pipe import discover_input_files
 from batwind.pipelines.batwind_pipe import configure_logger
 from batwind.pipelines.batwind_pipe import main
 from batwind.pipelines.batwind_pipe import run_batwind_pipe
+import batwind.pipelines.batwind_pipe as batwind_pipe_module
 
 
 def test_discover_input_files_finds_supported_extensions_in_current_directory(tmp_path):
@@ -23,13 +24,14 @@ def test_discover_input_files_finds_supported_extensions_in_current_directory(tm
     (tmp_path / "b.PLT").write_text("")
     (tmp_path / "c.dat").write_text("")
     (tmp_path / "d.DAT").write_text("")
+    (tmp_path / "log_n000000.log").write_text("")
     (tmp_path / "3DALL_t000000_000000.bin").write_text("")
     (tmp_path / "ignore.txt").write_text("")
     (tmp_path / "nested").mkdir()
     (tmp_path / "nested" / "c.plt").write_text("")
 
     files = discover_input_files(tmp_path)
-    assert [path.name for path in files] == ["3DALL_t000000_000000.bin", "a.plt", "b.PLT", "c.dat", "d.DAT"]
+    assert [path.name for path in files] == ["3DALL_t000000_000000.bin", "a.plt", "b.PLT", "c.dat", "d.DAT", "log_n000000.log"]
 
 
 def test_name_letter_counts_counts_alpha_only():
@@ -156,6 +158,7 @@ def test_run_batwind_pipe_auto_routes_by_filename_prefix_and_records_failures(tm
     (tmp_path / "3DALL_t000000_000000.bin").write_text("")
     (tmp_path / "shl_one.plt").write_text("")
     (tmp_path / "x=0_one.plt").write_text("")
+    (tmp_path / "log_n000000.log").write_text("")
     (tmp_path / "misc.plt").write_text("")
 
     results = run_batwind_pipe(tmp_path)
@@ -163,21 +166,25 @@ def test_run_batwind_pipe_auto_routes_by_filename_prefix_and_records_failures(tm
     assert sorted(path.name for path in results.discovered_files) == [
         "3DALL_t000000_000000.bin",
         "3d__one.plt",
+        "log_n000000.log",
         "shl_one.plt",
         "x=0_one.plt",
     ]
     assert sorted(path.name for path in results.failed_files) == [
         "3DALL_t000000_000000.bin",
         "3d__one.plt",
+        "log_n000000.log",
         "shl_one.plt",
         "x=0_one.plt",
     ]
     assert sorted(results.computed_results.keys()) == [
         "3DALL_t000000_000000.bin",
         "3d__one.plt",
+        "log_n000000.log",
         "shl_one.plt",
         "x=0_one.plt",
     ]
+    assert (tmp_path / "batwind-pipe.log.processed.json").exists()
     assert (tmp_path / "batwind-pipe.ua.processed.json").exists()
     assert (tmp_path / "batwind-pipe.volume.processed.json").exists()
     assert (tmp_path / "batwind-pipe.shell.processed.json").exists()
@@ -200,7 +207,7 @@ def test_run_batwind_pipe_explicit_pipeline_only_processes_matching_prefixes(tmp
 
 
 def test_batwind_pipe_main_accepts_builtin_pipeline_names_on_empty_directory(tmp_path):
-    for pipeline_name in ("dummy", "slice", "ua", "volume", "shell"):
+    for pipeline_name in ("dummy", "log", "slice", "ua", "volume", "shell"):
         code = main([str(tmp_path), "--pipeline", pipeline_name, "--log-level", "ERROR", "--record-log-level", "ERROR"])
         state_file = tmp_path / f"batwind-pipe.{pipeline_name}.processed.json"
         payload = json.loads(state_file.read_text())
@@ -223,3 +230,55 @@ def test_configure_logger_debug_enables_internal_loggers():
     assert logging.getLogger("batwind.pipelines.slice").getEffectiveLevel() == logging.DEBUG
     assert logging.getLogger("batwind.smart_ds").getEffectiveLevel() == logging.DEBUG
     assert logging.getLogger("griblet.graph").getEffectiveLevel() == logging.DEBUG
+
+
+def test_run_batwind_pipe_collects_movie_outputs(monkeypatch, tmp_path):
+    (tmp_path / "alpha.plt").write_text("")
+
+    expected_movie = tmp_path / "slice" / "alpha.slices.rho.mp4"
+    monkeypatch.setattr(
+        batwind_pipe_module,
+        "write_recorded_png_movies",
+        lambda directory, computed_results: [expected_movie],
+    )
+
+    def process_file(path):
+        png_path = Path(path).parent / "slice" / "alpha.slices.rho.png"
+        png_path.parent.mkdir(parents=True, exist_ok=True)
+        png_path.write_text("", encoding="utf-8")
+        recorder_log = logging.getLogger("recorder.test_pipeline")
+        recorder_log.setLevel(logging.DEBUG)
+        recorder_log.debug("slice_rho_png %r", str(png_path.relative_to(Path(path).parent)))
+
+    results = run_batwind_pipe(tmp_path, process_file=process_file)
+
+    assert results.movie_outputs == [expected_movie]
+
+
+def test_run_batwind_pipe_skips_movie_outputs_for_log_pipeline(monkeypatch, tmp_path):
+    (tmp_path / "log_n000000.log").write_text("", encoding="utf-8")
+
+    movie_calls = []
+
+    def fake_write_movies(directory, computed_results):
+        movie_calls.append((directory, computed_results))
+        return [tmp_path / "log" / "log_n000000.mp4"]
+
+    monkeypatch.setattr(batwind_pipe_module, "write_recorded_png_movies", fake_write_movies)
+
+    def fake_process_file(_path):
+        recorder_log = logging.getLogger("recorder.test_pipeline")
+        recorder_log.setLevel(logging.DEBUG)
+        recorder_log.debug("log_all_columns_png %r", "log/log_n000000.all_columns.png")
+
+    monkeypatch.setattr(
+        batwind_pipe_module,
+        "process_file_for_pipeline",
+        lambda pipeline_name: fake_process_file if pipeline_name == "log" else pytest.fail(f"unexpected pipeline {pipeline_name}"),
+    )
+
+    results = run_batwind_pipe(tmp_path)
+
+    assert [path.name for path in results.processed_files] == ["log_n000000.log"]
+    assert results.movie_outputs == []
+    assert movie_calls == []

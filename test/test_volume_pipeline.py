@@ -14,6 +14,7 @@ EXAMPLE_PLT = Path("examples/3d__var_1_n00000000.plt")
 
 def test_process_plt_file_records_3d_quantities_and_writes_surface_plots(tmp_path, monkeypatch):
     monkeypatch.setattr(volume, "FIELDLINE_FRACTION_N_SEEDS", 48)
+    monkeypatch.setattr(volume, "FIELD_LINE_OVERLAY_N_SEEDS", 48)
     monkeypatch.setattr(volume, "ANGULAR_MAP_N_POLAR", 8)
     monkeypatch.setattr(volume, "ANGULAR_MAP_N_AZIMUTH", 16)
     monkeypatch.setattr(volume, "SURFACE_RENDER_N_POLAR", 12)
@@ -56,12 +57,16 @@ def test_process_plt_file_records_3d_quantities_and_writes_surface_plots(tmp_pat
     out = {key: value["value"] for key, value in target.items()}
     full_png = tmp_path / out["volume_field_line_max_radius_surface_png"]
     closed_png = tmp_path / out["volume_closed_field_line_envelope_png"]
+    hard_overlay_png = tmp_path / out["volume_hard_los_example_field_lines_png"]
     assert full_png.exists()
     assert full_png.stat().st_size > 0
     assert closed_png.exists()
     assert closed_png.stat().st_size > 0
+    assert hard_overlay_png.exists()
+    assert hard_overlay_png.stat().st_size > 0
     assert str(full_png.relative_to(tmp_path)).startswith("volume/")
     assert str(closed_png.relative_to(tmp_path)).startswith("volume/")
+    assert str(hard_overlay_png.relative_to(tmp_path)).startswith("volume/")
     assert out["polar_map_rad"]
     assert out["azimuth_map_rad"]
     assert out["angular_cell_solid_angle_sr"]

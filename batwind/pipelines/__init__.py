@@ -2,5 +2,5 @@
 """
 
 # Pipelines are reserved for long chains of processing steps, including multi-file
-# processing workflows. Current built-in per-file pipelines are `dummy`, `slice`,
-# `ua`, and `volume` (selected via `batwind-pipe --pipeline ...`).
+# processing workflows. Current built-in per-file pipelines are `dummy`, `log`,
+# `slice`, `shell`, `ua`, and `volume` (selected via `batwind-pipe --pipeline ...`).

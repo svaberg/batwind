@@ -3,6 +3,7 @@ import inspect
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pyvista as pv
 import pytest
 from batwind.smart_ds import SmartDs
 
@@ -17,6 +18,7 @@ from batwind.pyvista.field_lines import (
     build_field_line_max_radius_surface,
     closed_field_line_max_radius_map,
     field_line_max_radius_map,
+    project_field_lines_to_view_plane,
 )
 from batwind.pyvista.fields import radial_component
 from test.pyvista_test_support import make_structured_smart_ds, scalar_bar_actor, scalar_mesh_actor
@@ -93,6 +95,47 @@ def test_build_magnetic_field_lines_on_toroidal_field_marks_all_lines_closed():
     assert not np.any(is_open)
     np.testing.assert_allclose(end_radius, 1.02, atol=2e-3)
     np.testing.assert_allclose(max_radius, 1.02, atol=2e-3)
+
+
+def test_project_field_lines_to_view_plane_separates_open_and_closed_cells():
+    lines = pv.PolyData(
+        np.array(
+            [
+                [1.0, -0.5, -1.0],
+                [0.0, 0.0, 0.0],
+                [-1.0, 0.5, 1.0],
+                [-0.5, -1.0, 1.0],
+                [0.0, 0.0, 0.0],
+                [0.5, 1.0, -1.0],
+            ],
+            dtype=float,
+        ),
+        lines=np.array([3, 0, 1, 2, 3, 3, 4, 5], dtype=np.int64),
+    )
+    lines.cell_data["field_line_is_open"] = np.array([False, True], dtype=bool)
+
+    projected = project_field_lines_to_view_plane(lines, view_axis="+Y")
+
+    np.testing.assert_allclose(
+        projected["closed"][0],
+        np.array([1.0, 0.0, -1.0, np.nan]),
+        equal_nan=True,
+    )
+    np.testing.assert_allclose(
+        projected["closed"][1],
+        np.array([-1.0, 0.0, 1.0, np.nan]),
+        equal_nan=True,
+    )
+    np.testing.assert_allclose(
+        projected["open"][0],
+        np.array([-0.5, 0.0, 0.5, np.nan]),
+        equal_nan=True,
+    )
+    np.testing.assert_allclose(
+        projected["open"][1],
+        np.array([1.0, 0.0, -1.0, np.nan]),
+        equal_nan=True,
+    )
 
 
 def test_field_line_max_radius_map_on_toroidal_field_is_seed_radius_everywhere():

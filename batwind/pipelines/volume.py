@@ -8,6 +8,7 @@ from pathlib import Path
 from time import perf_counter
 
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as path_effects
 import numpy as np
 import pyvista as pv
 from matplotlib import ticker
@@ -29,8 +30,11 @@ from batwind.pipelines.utils import output_prefix_from_input_file
 from batwind.pyvista.field_lines import (
     build_closed_field_line_max_radius_surface,
     build_field_line_max_radius_surface,
+    build_magnetic_field_lines,
     field_line_max_radius_map,
     open_flux_and_area_fractions,
+    project_field_lines_to_view_plane,
+    visible_magnetic_field_lines,
 )
 from batwind.pyvista.fields import resolve_body_radius
 from batwind.pyvista.isosurfaces import (
@@ -79,7 +83,9 @@ CORONAL_EMISSION_RADIANT_INTENSITY_UNIT = r"W sr$^{-1}$"
 CORONAL_EMISSION_LUMINOSITY_UNIT = r"W"
 CORONAL_EMISSION_EMISSIVITY_UNIT = r"W m$^{-3}$ sr$^{-1}$"
 CORONAL_EMISSION_SINGLE_DIRECTION_VIEW_AXIS = "+Y"
+CORONAL_EMISSION_EXAMPLE_VIEW_AXIS = "+Y"
 CORONAL_EMISSION_TOTALS_IMAGE_N = 512
+FIELD_LINE_OVERLAY_N_SEEDS = 256
 
 
 def build_los_geometry(smart_ds: SmartDs) -> tuple[Octree, OctreeRayTracer, tuple[float, float, float, float, float, float]]:
@@ -455,27 +461,32 @@ def plot_los_colormesh_npz(npz_path: Path, png_path: Path) -> None:
     plt.close(fig)
 
 
-def plot_example_los_colormesh_npz(npz_path: Path, png_path: Path) -> None:
-    """
-    Plot one cropped example-panel LOS colormesh product in the old notebook style.
-    """
+def load_example_los_colormesh_npz(npz_path: Path) -> dict[str, object]:
     with np.load(npz_path, allow_pickle=False) as data:
-        x = np.asarray(data["x"], dtype=float)
-        y = np.asarray(data["y"], dtype=float)
-        image = np.asarray(data["image"], dtype=float)
-        xlabel = str(data["xlabel"])
-        ylabel = str(data["ylabel"])
-        colorbar_label = str(data["colorbar_label"])
-        side_length_r = float(data["side_length_r"])
+        return {
+            "x": np.asarray(data["x"], dtype=float),
+            "y": np.asarray(data["y"], dtype=float),
+            "image": np.asarray(data["image"], dtype=float),
+            "xlabel": str(data["xlabel"]),
+            "ylabel": str(data["ylabel"]),
+            "colorbar_label": str(data["colorbar_label"]),
+            "side_length_r": float(data["side_length_r"]),
+            "view_axis": str(data["view_axis"]),
+        }
+
+
+def draw_example_los_colormesh(ax: plt.Axes, example_data: dict[str, object]):
+    x = np.asarray(example_data["x"], dtype=float)
+    y = np.asarray(example_data["y"], dtype=float)
+    image = np.asarray(example_data["image"], dtype=float)
     positive = image[np.isfinite(image) & (image > 0.0)]
     norm = LogNorm(vmin=float(np.nanmin(positive)), vmax=float(np.nanmax(positive))) if positive.size else None
-    fig = plt.figure(figsize=(4.2, 4.3), constrained_layout=True)
-    ax = fig.add_subplot(111)
     mesh = ax.pcolormesh(x, y, image, cmap="viridis", norm=norm, shading="nearest", rasterized=True)
+    side_length_r = float(example_data["side_length_r"])
     ax.set_xlim(-side_length_r, side_length_r)
     ax.set_ylim(-side_length_r, side_length_r)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
+    ax.set_xlabel(str(example_data["xlabel"]))
+    ax.set_ylabel(str(example_data["ylabel"]))
     ax.set_aspect("equal")
     ax.xaxis.set_major_locator(ticker.MultipleLocator(1.0))
     ax.xaxis.set_minor_locator(ticker.MultipleLocator(0.2))
@@ -483,8 +494,69 @@ def plot_example_los_colormesh_npz(npz_path: Path, png_path: Path) -> None:
     ax.yaxis.set_minor_locator(ticker.MultipleLocator(0.2))
     ax.grid(False)
     overlay_sphere_graticule(ax, color="0.2", linewidth=0.35)
+    return mesh
+
+
+def draw_projected_field_lines(
+    ax: plt.Axes,
+    field_lines,
+    *,
+    view_axis: str,
+) -> None:
+    projected_lines = project_field_lines_to_view_plane(field_lines, view_axis=view_axis)
+    line_effects = [
+        path_effects.Stroke(linewidth=2.6, foreground="black"),
+        path_effects.Normal(),
+    ]
+    closed_x, closed_y = projected_lines["closed"]
+    if closed_x.size > 0:
+        closed_line, = ax.plot(closed_x, closed_y, color="white", linewidth=1.2, zorder=4)
+        closed_line.set_path_effects(line_effects)
+    open_x, open_y = projected_lines["open"]
+    if open_x.size > 0:
+        open_line, = ax.plot(
+            open_x,
+            open_y,
+            color="white",
+            linewidth=1.0,
+            linestyle="--",
+            zorder=4,
+        )
+        open_line.set_path_effects(line_effects)
+
+
+def plot_example_los_colormesh_npz(npz_path: Path, png_path: Path) -> None:
+    """
+    Plot one cropped example-panel LOS colormesh product in the old notebook style.
+    """
+    example_data = load_example_los_colormesh_npz(npz_path)
+    fig = plt.figure(figsize=(4.2, 4.3), constrained_layout=True)
+    ax = fig.add_subplot(111)
+    mesh = draw_example_los_colormesh(ax, example_data)
     colorbar = fig.colorbar(mesh, ax=ax, orientation="horizontal", pad=0.02, fraction=0.06, location="top")
-    colorbar.set_label(colorbar_label)
+    colorbar.set_label(str(example_data["colorbar_label"]))
+    fig.savefig(png_path)
+    plt.close(fig)
+
+
+def plot_example_los_colormesh_field_lines_npz(
+    npz_path: Path,
+    field_lines,
+    png_path: Path,
+    *,
+    title: str,
+) -> None:
+    """
+    Plot one cropped synthetic-image panel with projected magnetic field lines on top.
+    """
+    example_data = load_example_los_colormesh_npz(npz_path)
+    fig = plt.figure(figsize=(4.2, 4.3), constrained_layout=True)
+    ax = fig.add_subplot(111)
+    mesh = draw_example_los_colormesh(ax, example_data)
+    draw_projected_field_lines(ax, field_lines, view_axis=str(example_data["view_axis"]))
+    ax.set_title(title)
+    colorbar = fig.colorbar(mesh, ax=ax, orientation="horizontal", pad=0.02, fraction=0.06, location="top")
+    colorbar.set_label(str(example_data["colorbar_label"]))
     fig.savefig(png_path)
     plt.close(fig)
 
@@ -749,6 +821,7 @@ def save_los_images(
     output_dir: Path,
     prefix: str,
     parent_dir: Path,
+    max_alfven_radius: float,
 ) -> None:
     stage_start = perf_counter()
     log.info("Rendering LOS rho^2 images...")
@@ -778,7 +851,7 @@ def save_los_images(
         bounds_r,
         path_length_scale=body_radius_m,
         image_n=LOS_EXAMPLE_GRID_N,
-        view_axis="+Y",
+        view_axis=CORONAL_EMISSION_EXAMPLE_VIEW_AXIS,
         width=2.0 * LOS_EXAMPLE_SIDE_LENGTH_R,
         height=2.0 * LOS_EXAMPLE_SIDE_LENGTH_R,
     )
@@ -808,7 +881,7 @@ def save_los_images(
         rho_sq_los_example,
         los_example_extent,
         los_example_counts,
-        view_axis="+Y",
+        view_axis=CORONAL_EMISSION_EXAMPLE_VIEW_AXIS,
     )
     los_example_npz = output_dir / f"{prefix}.rho2_los_example.npz"
     save_example_los_colormesh_npz(
@@ -822,6 +895,16 @@ def save_los_images(
     plot_example_los_colormesh_npz(los_example_npz, los_example_png)
 
     response_path = DEFAULT_RESPONSE_FUNCTION_PATH
+    overlay_plot_radius = float(np.hypot(LOS_EXAMPLE_SIDE_LENGTH_R, LOS_EXAMPLE_SIDE_LENGTH_R))
+    _field_line_grid, _field_line_source, traced_field_lines = build_magnetic_field_lines(
+        smart_ds,
+        n_seeds=FIELD_LINE_OVERLAY_N_SEEDS,
+    )
+    overlay_field_lines = visible_magnetic_field_lines(
+        traced_field_lines,
+        plot_radius=overlay_plot_radius,
+        open_line_plot_radius=max_alfven_radius,
+    )
     point_unblocked_solid_angle = point_unblocked_solid_angle_sr(smart_ds)
     raw_band_emissivities = {
         band_name: band_emissivity_from_response_table_si(
@@ -841,7 +924,7 @@ def save_los_images(
             bounds_r,
             path_length_scale=body_radius_m,
             image_n=LOS_EXAMPLE_GRID_N,
-            view_axis="+Y",
+            view_axis=CORONAL_EMISSION_EXAMPLE_VIEW_AXIS,
             width=2.0 * LOS_EXAMPLE_SIDE_LENGTH_R,
             height=2.0 * LOS_EXAMPLE_SIDE_LENGTH_R,
         )
@@ -851,7 +934,7 @@ def save_los_images(
             band_image,
             band_extent,
             band_counts,
-            view_axis="+Y",
+            view_axis=CORONAL_EMISSION_EXAMPLE_VIEW_AXIS,
         )
         band_npz = output_dir / f"{prefix}.{band_name}_los_example.npz"
         save_example_los_colormesh_npz(
@@ -863,6 +946,18 @@ def save_los_images(
         )
         band_png = output_dir / f"{prefix}.{band_name}_los_example.png"
         plot_example_los_colormesh_npz(band_npz, band_png)
+        if band_name == "hard":
+            band_field_lines_png = output_dir / f"{prefix}.{band_name}_los_example_field_lines.png"
+            plot_example_los_colormesh_field_lines_npz(
+                band_npz,
+                overlay_field_lines,
+                band_field_lines_png,
+                title="Hard X-ray with magnetic field lines",
+            )
+            add_record(
+                f"volume_{band_name}_los_example_field_lines_png %r",
+                str(band_field_lines_png.relative_to(parent_dir)),
+            )
         add_record(f"volume_{band_name}_los_example_npz %r", str(band_npz.relative_to(parent_dir)))
         add_record(f"volume_{band_name}_los_example_png %r", str(band_png.relative_to(parent_dir)))
         add_record(f"volume_{band_name}_los_example_response %r", str(response_path))
@@ -1003,7 +1098,7 @@ def process_plt_file(file_path: str | Path) -> None:
 
     max_alfven_radius = record_3d_quantities(smart_ds)
     save_field_line_surface_plots(smart_ds, output_dir, prefix, path.parent, max_alfven_radius)
-    save_los_images(smart_ds, output_dir, prefix, path.parent)
+    save_los_images(smart_ds, output_dir, prefix, path.parent, max_alfven_radius)
 
     stage_start = perf_counter()
     log.info("Saving volume figure...")

@@ -90,6 +90,7 @@ class BatwindPipeResults:
     processed_files: list[Path] = field(default_factory=list)
     failed_files: list[Path] = field(default_factory=list)
     skipped_files: list[Path] = field(default_factory=list)
+    movie_outputs: list[Path] = field(default_factory=list)
     computed_results: dict[str, dict[str, object]] = field(default_factory=dict)
     state_file: Path | None = None
 

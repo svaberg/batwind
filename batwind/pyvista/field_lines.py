@@ -391,6 +391,83 @@ def trace_magnetic_field_lines(
     return lines
 
 
+def visible_magnetic_field_lines(
+    lines: pv.PolyData,
+    *,
+    plot_radius: float,
+    open_line_plot_radius: float,
+) -> pv.PolyData:
+    if plot_radius <= 0.0:
+        raise ValueError("plot_radius must be positive")
+    if open_line_plot_radius <= 0.0:
+        raise ValueError("open_line_plot_radius must be positive")
+
+    closed_lines = lines.clip_surface(pv.Sphere(radius=float(plot_radius)), invert=True)
+    if closed_lines.n_points == 0 or closed_lines.n_cells == 0:
+        raise ValueError(f"No magnetic field lines remained inside r={plot_radius:g}")
+    closed_mask = ~np.asarray(closed_lines.cell_data["field_line_is_open"], dtype=bool)
+    closed_visible = closed_lines.extract_cells(np.flatnonzero(closed_mask))
+
+    open_radius = min(float(plot_radius), float(open_line_plot_radius))
+    open_lines = lines.clip_surface(pv.Sphere(radius=open_radius), invert=True)
+    if open_lines.n_points == 0 or open_lines.n_cells == 0:
+        raise ValueError(f"No magnetic field lines remained inside r={open_radius:g}")
+    open_mask = np.asarray(open_lines.cell_data["field_line_is_open"], dtype=bool)
+    open_visible = open_lines.extract_cells(np.flatnonzero(open_mask))
+
+    if closed_visible.n_cells == 0:
+        return open_visible
+    if open_visible.n_cells == 0:
+        return closed_visible
+    return closed_visible.merge(open_visible)
+
+
+def project_field_lines_to_view_plane(
+    lines: pv.PolyData,
+    *,
+    view_axis: str,
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    if not isinstance(lines, pv.PolyData):
+        lines = lines.extract_surface(algorithm=None)
+    if "field_line_is_open" not in lines.cell_data:
+        raise KeyError("Expected field_line_is_open in field-line cell data")
+
+    def project(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if view_axis == "+Z":
+            return points[:, 0], points[:, 1]
+        if view_axis == "+X":
+            return points[:, 1], points[:, 2]
+        if view_axis == "+Y":
+            return points[:, 0], points[:, 2]
+        raise ValueError(f"Unsupported field-line view_axis {view_axis!r}")
+
+    projected = {
+        "closed": ([], []),
+        "open": ([], []),
+    }
+    cells = np.asarray(lines.lines, dtype=int)
+    cell_is_open = np.asarray(lines.cell_data["field_line_is_open"], dtype=bool)
+    i = 0
+    cell_id = 0
+    while i < cells.size:
+        n_points = int(cells[i])
+        point_ids = cells[i + 1:i + 1 + n_points]
+        x, y = project(np.asarray(lines.points[point_ids], dtype=float))
+        family = "open" if bool(cell_is_open[cell_id]) else "closed"
+        family_x, family_y = projected[family]
+        family_x.extend(np.asarray(x, dtype=float).tolist())
+        family_x.append(np.nan)
+        family_y.extend(np.asarray(y, dtype=float).tolist())
+        family_y.append(np.nan)
+        i += n_points + 1
+        cell_id += 1
+
+    return {
+        family: (np.asarray(family_x, dtype=float), np.asarray(family_y, dtype=float))
+        for family, (family_x, family_y) in projected.items()
+    }
+
+
 def plot_magnetic_field_lines(
     smart_ds: SmartDs,
     *,
@@ -407,25 +484,11 @@ def plot_magnetic_field_lines(
 
     grid, source, lines = build_magnetic_field_lines(smart_ds, n_seeds=n_seeds)
     body_radius = float(np.asarray(grid.field_data["RBODY [R]"]).ravel()[0])
-    closed_lines = lines.clip_surface(pv.Sphere(radius=float(plot_radius)), invert=True)
-    if closed_lines.n_points == 0 or closed_lines.n_cells == 0:
-        raise ValueError(f"No magnetic field lines remained inside r={plot_radius:g}")
-    closed_mask = ~np.asarray(closed_lines.cell_data["field_line_is_open"], dtype=bool)
-    closed_visible = closed_lines.extract_cells(np.flatnonzero(closed_mask))
-
-    open_radius = min(float(plot_radius), float(open_line_plot_radius))
-    open_lines = lines.clip_surface(pv.Sphere(radius=open_radius), invert=True)
-    if open_lines.n_points == 0 or open_lines.n_cells == 0:
-        raise ValueError(f"No magnetic field lines remained inside r={open_radius:g}")
-    open_mask = np.asarray(open_lines.cell_data["field_line_is_open"], dtype=bool)
-    open_visible = open_lines.extract_cells(np.flatnonzero(open_mask))
-
-    if closed_visible.n_cells == 0:
-        visible_lines = open_visible
-    elif open_visible.n_cells == 0:
-        visible_lines = closed_visible
-    else:
-        visible_lines = closed_visible.merge(open_visible)
+    visible_lines = visible_magnetic_field_lines(
+        lines,
+        plot_radius=plot_radius,
+        open_line_plot_radius=open_line_plot_radius,
+    )
 
     star = pv.Sphere(radius=body_radius, theta_resolution=120, phi_resolution=120).sample(grid)
 
