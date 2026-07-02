@@ -420,8 +420,10 @@ def run_batwind_pipe(
             results.skipped_files.append(file_path)
             log.debug("batwind_pipe.skip_processed | file=%s", file_path.name)
             continue
-        if noclobber and file_key in processed_keys:
+        if file_key in processed_keys:
             log.info("Reprocessing %s (%s)...", display_file_key, stale_reason)
+        else:
+            log.info("Processing %s...", display_file_key)
 
         file_results: dict[str, object] = {
             "meta": {

@@ -115,6 +115,19 @@ def test_run_batwind_pipe_clobber_reprocesses_files(tmp_path):
     assert second.skipped_files == []
 
 
+def test_run_batwind_pipe_logs_each_processed_file_at_info(tmp_path, caplog):
+    file_path = tmp_path / "alpha.plt"
+    file_path.write_text("")
+
+    def process_file(_path):
+        return None
+
+    with caplog.at_level(logging.INFO, logger="batwind.pipelines.batwind_pipe"):
+        run_batwind_pipe(tmp_path, process_file=process_file)
+
+    assert "Processing alpha.plt..." in [record.getMessage() for record in caplog.records]
+
+
 def test_run_batwind_pipe_reprocesses_when_source_file_is_newer(tmp_path):
     file_path = tmp_path / "alpha.plt"
     file_path.write_text("")
