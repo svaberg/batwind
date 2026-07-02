@@ -6,6 +6,27 @@ import batwind.pipelines.log as log_pipeline
 from batwind.pipelines.recorder import BatwindRecordHandler
 
 
+def test_zdi_ramp_ranges_offset_session_local_iterations_to_absolute_iterations():
+    info = log_pipeline.SessionInfo(
+        label="s3",
+        start=92000,
+        stop=95000,
+        local_bools={"UseZdiBoundary": True, "UseZdiMagnetogram": True},
+        local_scalars={"ZdiRampIterStart": "1000", "ZdiRampIterStop": "2000", "TypeZdiRamp": "cosine"},
+        active_bools={"UseZdiBoundary": True, "UseZdiMagnetogram": True},
+        active_scalars={"ZdiRampIterStart": "1000", "ZdiRampIterStop": "2000", "TypeZdiRamp": "cosine"},
+        summary="ZDI=T/T; Ramp=1000-2000",
+    )
+
+    assert log_pipeline.zdi_ramp_ranges([info]) == [(93000, 94000, "cosine")]
+
+
+def test_flux_panel_title_uses_human_readable_labels():
+    assert log_pipeline.flux_panel_title("rho", "total") == "Mass Flux"
+    assert log_pipeline.flux_panel_title("jz", "total") == "Angular Momentum Flux"
+    assert log_pipeline.flux_panel_title("rho", "in") == "Mass Flux In"
+
+
 def test_process_log_file_writes_plots_and_session_report(tmp_path):
     (tmp_path / "PARAM.in").write_text(
         "\n".join(

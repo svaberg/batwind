@@ -39,6 +39,12 @@ TRACKED_SCALAR_NAMES = {
     "ZdiRampIterStop",
 }
 ROTATING_FRAME_ANGULAR_BASES = {"jx", "jy", "jz"}
+FLUX_DISPLAY_NAMES = {
+    "rho": "Mass Flux",
+    "jx": "Angular Momentum Flux (x)",
+    "jy": "Angular Momentum Flux (y)",
+    "jz": "Angular Momentum Flux",
+}
 
 
 @dataclass(frozen=True)
@@ -51,6 +57,14 @@ class SessionInfo:
     active_bools: dict[str, bool]
     active_scalars: dict[str, str]
     summary: str
+
+
+def resolve_session_iteration(value: str, *, session_start: int) -> int:
+    """Resolve one session-local or absolute iteration scalar to absolute iteration."""
+    iteration = int(float(value))
+    if session_start > 0 and iteration < session_start:
+        return session_start + iteration
+    return iteration
 
 
 def find_run_root(directory: Path) -> Path | None:
@@ -258,6 +272,30 @@ def write_session_report(
     return report_path
 
 
+def zdi_ramp_ranges(sessions: list[SessionInfo]) -> list[tuple[int, int, str]]:
+    """Return distinct absolute ZDI ramp ranges active in the parsed sessions."""
+    ranges: list[tuple[int, int, str]] = []
+    seen: set[tuple[int, int, str]] = set()
+    for info in sessions:
+        if not (info.active_bools.get("UseZdiBoundary", False) or info.active_bools.get("UseZdiMagnetogram", False)):
+            continue
+        ramp_start_text = info.active_scalars.get("ZdiRampIterStart")
+        ramp_stop_text = info.active_scalars.get("ZdiRampIterStop")
+        if ramp_start_text is None or ramp_stop_text is None:
+            continue
+        ramp_start = resolve_session_iteration(ramp_start_text, session_start=info.start)
+        ramp_stop = resolve_session_iteration(ramp_stop_text, session_start=info.start)
+        if ramp_stop <= ramp_start:
+            continue
+        ramp_type = info.active_scalars.get("TypeZdiRamp", "ramp")
+        ramp_info = (ramp_start, ramp_stop, ramp_type)
+        if ramp_info in seen:
+            continue
+        seen.add(ramp_info)
+        ranges.append(ramp_info)
+    return ranges
+
+
 def shade_session_ranges(axis: plt.Axes, iteration: np.ndarray, sessions: list[SessionInfo]) -> None:
     """Shade background ranges for the active run sessions."""
     for index, info in enumerate(sessions):
@@ -268,6 +306,26 @@ def shade_session_ranges(axis: plt.Axes, iteration: np.ndarray, sessions: list[S
         axis.axvspan(overlap_start, overlap_stop, color=str(0.98 - 0.03 * (index % 2)), zorder=0)
         if iteration[0] <= info.stop <= iteration[-1]:
             axis.axvline(info.stop, color="0.4", linewidth=1.0, linestyle="--", alpha=0.5)
+
+
+def shade_zdi_ramp_ranges(axis: plt.Axes, iteration: np.ndarray, sessions: list[SessionInfo]) -> None:
+    """Highlight active ZDI ramp intervals with a strong shaded band."""
+    for ramp_start, ramp_stop, _ramp_type in zdi_ramp_ranges(sessions):
+        overlap_start = max(ramp_start, int(iteration[0]))
+        overlap_stop = min(ramp_stop, int(iteration[-1]))
+        if overlap_start >= overlap_stop:
+            continue
+        axis.axvspan(
+            overlap_start,
+            overlap_stop,
+            facecolor="#ffb347",
+            edgecolor="#c75b12",
+            linewidth=1.2,
+            alpha=0.35,
+            zorder=0.5,
+        )
+        axis.axvline(overlap_start, color="#c75b12", linewidth=2.0, linestyle=":", alpha=0.95, zorder=0.6)
+        axis.axvline(overlap_stop, color="#c75b12", linewidth=2.0, linestyle=":", alpha=0.95, zorder=0.6)
 
 
 def label_session_ranges(axis: plt.Axes, iteration: np.ndarray, sessions: list[SessionInfo]) -> None:
@@ -287,6 +345,27 @@ def label_session_ranges(axis: plt.Axes, iteration: np.ndarray, sessions: list[S
             fontsize=7,
             color="0.25",
             bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "edgecolor": "0.7", "alpha": 0.85},
+        )
+
+
+def label_zdi_ramp_ranges(axis: plt.Axes, iteration: np.ndarray, sessions: list[SessionInfo]) -> None:
+    """Annotate highlighted ZDI ramp ranges on the top diagnostic panel."""
+    for index, (ramp_start, ramp_stop, ramp_type) in enumerate(zdi_ramp_ranges(sessions)):
+        overlap_start = max(ramp_start, int(iteration[0]))
+        overlap_stop = min(ramp_stop, int(iteration[-1]))
+        if overlap_start >= overlap_stop:
+            continue
+        axis.text(
+            0.5 * (overlap_start + overlap_stop),
+            0.79 if index % 2 == 0 else 0.71,
+            f"ZDI {ramp_type} ramp\n{ramp_start}-{ramp_stop}",
+            transform=axis.get_xaxis_transform(),
+            va="top",
+            ha="center",
+            fontsize=8,
+            fontweight="bold",
+            color="#7a2e00",
+            bbox={"boxstyle": "round,pad=0.25", "facecolor": "#ffe2b8", "edgecolor": "#c75b12", "alpha": 0.95},
         )
 
 
@@ -317,6 +396,7 @@ def plot_all_columns(
     for axis, (column_index, column_name) in zip(axes, series_columns, strict=True):
         values = data[:, column_index]
         shade_session_ranges(axis, iteration, sessions)
+        shade_zdi_ramp_ranges(axis, iteration, sessions)
         axis.plot(iteration, values, linewidth=1.5)
         axis.set_ylabel(column_name)
         axis.set_ylim(*padded_limits(values))
@@ -326,6 +406,7 @@ def plot_all_columns(
     axes[0].set_title("all columns")
     if sessions:
         label_session_ranges(axes[0], iteration, sessions)
+        label_zdi_ramp_ranges(axes[0], iteration, sessions)
     axes[-1].set_xlabel(columns[0])
     for axis in axes:
         axis.set_xlim(iteration[0], iteration[-1])
@@ -397,6 +478,20 @@ def fit_corotation_correction(mass_flux: np.ndarray, angular_flux: np.ndarray, r
     return -numerator / denominator
 
 
+def flux_panel_title(base_name: str, variant_name: str) -> str:
+    """Return a human-readable title for one flux panel."""
+    base_title = FLUX_DISPLAY_NAMES.get(base_name, base_name)
+    if variant_name == "value":
+        return base_title
+    if variant_name == "total":
+        return base_title
+    if variant_name == "in":
+        return f"{base_title} In"
+    if variant_name == "out":
+        return f"{base_title} Out"
+    return f"{base_title} {variant_name}"
+
+
 def corrected_panel_series(
     *,
     base_name: str,
@@ -407,7 +502,7 @@ def corrected_panel_series(
 ) -> tuple[list[tuple[str, np.ndarray]], str]:
     """Return one plotted series group, with corotation correction if available."""
     out = [(radius_label, np.array(data[:, column_index], copy=True)) for radius_label, column_index in members]
-    title = base_name if variant_name == "value" else f"{base_name} {variant_name}"
+    title = flux_panel_title(base_name, variant_name)
 
     if base_name not in ROTATING_FRAME_ANGULAR_BASES:
         return out, title
@@ -461,6 +556,7 @@ def plot_flux_summary(
 
     for axis, (base_name, variant_name, members) in zip(axes, selected_specs, strict=True):
         shade_session_ranges(axis, iteration, sessions)
+        shade_zdi_ramp_ranges(axis, iteration, sessions)
         plotted_members, axis_title = corrected_panel_series(
             base_name=base_name,
             variant_name=variant_name,
@@ -472,7 +568,7 @@ def plot_flux_summary(
         for radius_label, values in plotted_members:
             series_values.append(values)
             axis.plot(iteration, values, linewidth=2, label=f"R={radius_label}")
-        axis.set_ylabel(base_name)
+        axis.set_ylabel(axis_title)
         axis.set_title(axis_title)
         axis.set_ylim(*padded_limits(np.concatenate(series_values)))
         axis.grid(True, alpha=0.3)
@@ -480,6 +576,7 @@ def plot_flux_summary(
 
     if sessions:
         label_session_ranges(axes[0], iteration, sessions)
+        label_zdi_ramp_ranges(axes[0], iteration, sessions)
     axes[-1].set_xlabel(columns[0])
     for axis in axes:
         axis.set_xlim(iteration[0], iteration[-1])

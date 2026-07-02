@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -45,7 +46,7 @@ class FakeStructuredShellDs:
 
 
 def test_process_plt_file_plots_magnetic_shell_component_maps(monkeypatch, tmp_path):
-    file_path = tmp_path / "shl_demo.plt"
+    file_path = tmp_path / "shl_demo_n00000042.plt"
     file_path.write_text("", encoding="utf-8")
 
     monkeypatch.setattr(
@@ -81,6 +82,31 @@ def test_process_plt_file_plots_magnetic_shell_component_maps(monkeypatch, tmp_p
     output_path = tmp_path / out["shell_magnetic_components_png"]
     assert output_path.exists()
     assert output_path.stat().st_size > 0
+
+
+def test_process_plt_file_passes_iteration_label_to_magnetic_plot(monkeypatch, tmp_path):
+    file_path = tmp_path / "shl_demo_n00000042.plt"
+    file_path.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        shell_pipeline.SmartDs,
+        "from_file",
+        staticmethod(lambda *args, **kwargs: FakeMagneticShellDs()),
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_plot(component_maps, *, iteration_label, lon_nodes, lat_nodes, output_path):
+        captured["iteration_label"] = iteration_label
+        captured["output_path"] = output_path
+        output_path.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(shell_pipeline, "plot_shell_component_stack_png", fake_plot)
+
+    shell_pipeline.process_plt_file(file_path)
+
+    assert captured["iteration_label"] == "Iteration n00000042"
+    assert Path(captured["output_path"]).name == "shl_demo_n00000042.magnetic_components.png"
 
 
 def test_shell_map_and_profile_uses_native_ijk_layout():

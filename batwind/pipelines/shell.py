@@ -27,6 +27,14 @@ def load_shell_axis_indices(smart_ds: SmartDs, name: str) -> tuple[np.ndarray, i
     return axis, size
 
 
+def shell_iteration_token(path: Path) -> str | None:
+    """Extract one BATSRUS iteration token like `n00109520` from a shell filename."""
+    for part in path.stem.split("_"):
+        if len(part) > 1 and part[0] == "n" and part[1:].isdigit():
+            return part
+    return None
+
+
 def shell_cell_values(node_values):
     """Convert one structured nodal shell field into explicit cell values."""
     node_values = np.asarray(node_values, dtype=float)
@@ -115,12 +123,20 @@ def shell_map_and_profile(
 def plot_shell_component_stack_png(
     component_maps: tuple[tuple[np.ndarray, str, str], ...],
     *,
+    iteration_label: str | None,
     lon_nodes,
     lat_nodes,
     output_path: Path,
 ) -> None:
     """Plot stacked magnetic shell maps to one PNG."""
     figure, axes = plt.subplots(len(component_maps), 1, figsize=(7, 12), constrained_layout=True, sharex=True)
+    if iteration_label is not None:
+        figure.suptitle(
+            iteration_label,
+            fontsize=16,
+            fontweight="bold",
+            bbox={"facecolor": "white", "edgecolor": "0.4", "alpha": 0.9, "pad": 4.0},
+        )
     axes = np.atleast_1d(axes)
     for axis, (map_values, title, colorbar_label) in zip(axes, component_maps, strict=True):
         plot_kwargs = {"shading": "flat", "cmap": "RdBu_r"}
@@ -159,9 +175,11 @@ def process_magnetic_shell_file(
             title,
             colorbar_label,
         ))
+    iteration_token = shell_iteration_token(path)
     output_path = output_dir / f"{prefix}.magnetic_components.png"
     plot_shell_component_stack_png(
         tuple(component_maps),
+        iteration_label=None if iteration_token is None else f"Iteration {iteration_token}",
         lon_nodes=lon_nodes,
         lat_nodes=lat_nodes,
         output_path=output_path,

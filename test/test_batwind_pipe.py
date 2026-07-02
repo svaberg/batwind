@@ -34,6 +34,30 @@ def test_discover_input_files_finds_supported_extensions_in_current_directory(tm
     assert [path.name for path in files] == ["3DALL_t000000_000000.bin", "a.plt", "b.PLT", "c.dat", "d.DAT", "log_n000000.log"]
 
 
+def test_discover_input_files_includes_known_component_io2_directories_from_run_root(tmp_path, caplog):
+    (tmp_path / "SC" / "IO2").mkdir(parents=True)
+    (tmp_path / "IH" / "IO2").mkdir(parents=True)
+    (tmp_path / "GM" / "IO2").mkdir(parents=True)
+    (tmp_path / "SC" / "IO2" / "x=0_sc.plt").write_text("")
+    (tmp_path / "IH" / "IO2" / "3d__ih.plt").write_text("")
+    (tmp_path / "GM" / "IO2" / "log_n000000.log").write_text("")
+    (tmp_path / "SC" / "other").mkdir(parents=True)
+    (tmp_path / "SC" / "other" / "ignore.plt").write_text("")
+
+    with caplog.at_level(logging.INFO, logger="batwind.pipelines.batwind_pipe"):
+        files = discover_input_files(tmp_path)
+
+    assert [path.relative_to(tmp_path).as_posix() for path in files] == [
+        "GM/IO2/log_n000000.log",
+        "IH/IO2/3d__ih.plt",
+        "SC/IO2/x=0_sc.plt",
+    ]
+    assert f"Scanning {tmp_path}..." in [record.getMessage() for record in caplog.records]
+    assert f"Entering {tmp_path / 'SC' / 'IO2'}..." in [record.getMessage() for record in caplog.records]
+    assert f"Entering {tmp_path / 'IH' / 'IO2'}..." in [record.getMessage() for record in caplog.records]
+    assert f"Entering {tmp_path / 'GM' / 'IO2'}..." in [record.getMessage() for record in caplog.records]
+
+
 def test_name_letter_counts_counts_alpha_only():
     assert name_letter_counts("a1-b2") == (1, 1)
 
@@ -65,19 +89,7 @@ def test_dummy_pipeline_process_without_sink_does_not_fail(tmp_path, caplog):
     ]
 
 
-def test_run_batwind_pipe_noclobber_skips_already_processed_files(tmp_path):
-    (tmp_path / "alpha.plt").write_text("")
-    (tmp_path / "beta.plt").write_text("")
-
-    first = run_batwind_pipe(tmp_path, pipeline="dummy")
-    second = run_batwind_pipe(tmp_path, pipeline="dummy", noclobber=True)
-
-    assert [path.name for path in first.processed_files] == ["alpha.plt", "beta.plt"]
-    assert second.processed_files == []
-    assert [path.name for path in second.skipped_files] == ["alpha.plt", "beta.plt"]
-
-
-def test_run_batwind_pipe_default_clobber_reprocesses_files(tmp_path):
+def test_run_batwind_pipe_default_noclobber_skips_already_processed_files(tmp_path):
     (tmp_path / "alpha.plt").write_text("")
     (tmp_path / "beta.plt").write_text("")
 
@@ -85,8 +97,72 @@ def test_run_batwind_pipe_default_clobber_reprocesses_files(tmp_path):
     second = run_batwind_pipe(tmp_path, pipeline="dummy")
 
     assert [path.name for path in first.processed_files] == ["alpha.plt", "beta.plt"]
+    assert second.processed_files == []
+    assert [path.name for path in second.skipped_files] == ["alpha.plt", "beta.plt"]
+
+
+def test_run_batwind_pipe_clobber_reprocesses_files(tmp_path):
+    (tmp_path / "alpha.plt").write_text("")
+    (tmp_path / "beta.plt").write_text("")
+
+    first = run_batwind_pipe(tmp_path, pipeline="dummy")
+    second = run_batwind_pipe(tmp_path, pipeline="dummy", noclobber=False)
+
+    assert [path.name for path in first.processed_files] == ["alpha.plt", "beta.plt"]
     assert [path.name for path in second.processed_files] == ["alpha.plt", "beta.plt"]
     assert second.skipped_files == []
+
+
+def test_run_batwind_pipe_discovers_component_io2_directories_from_run_root(tmp_path):
+    sc_file = tmp_path / "SC" / "IO2" / "alpha.plt"
+    ih_file = tmp_path / "IH" / "IO2" / "beta.plt"
+    gm_file = tmp_path / "GM" / "IO2" / "gamma.plt"
+    for path in (sc_file, ih_file, gm_file):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+
+    def process_file(path):
+        recorder_log = logging.getLogger("recorder.test_pipeline")
+        recorder_log.setLevel(logging.DEBUG)
+        recorder_log.debug("seen %r", Path(path).relative_to(tmp_path).as_posix())
+
+    results = run_batwind_pipe(tmp_path, process_file=process_file)
+
+    assert [path.relative_to(tmp_path).as_posix() for path in results.discovered_files] == [
+        "GM/IO2/gamma.plt",
+        "IH/IO2/beta.plt",
+        "SC/IO2/alpha.plt",
+    ]
+    assert [path.relative_to(tmp_path).as_posix() for path in results.processed_files] == [
+        "GM/IO2/gamma.plt",
+        "IH/IO2/beta.plt",
+        "SC/IO2/alpha.plt",
+    ]
+    assert sorted(results.computed_results) == [
+        "GM/IO2/gamma.plt",
+        "IH/IO2/beta.plt",
+        "SC/IO2/alpha.plt",
+    ]
+
+
+def test_run_batwind_pipe_run_root_and_component_io2_share_state(tmp_path):
+    file_path = tmp_path / "SC" / "IO2" / "alpha.plt"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text("")
+
+    def process_file(path):
+        recorder_log = logging.getLogger("recorder.test_pipeline")
+        recorder_log.setLevel(logging.DEBUG)
+        recorder_log.debug("seen %r", Path(path).name)
+
+    first = run_batwind_pipe(tmp_path, process_file=process_file)
+    second = run_batwind_pipe(tmp_path / "SC" / "IO2", process_file=process_file)
+
+    assert [path.relative_to(tmp_path).as_posix() for path in first.processed_files] == ["SC/IO2/alpha.plt"]
+    assert second.processed_files == []
+    assert [path.name for path in second.skipped_files] == ["alpha.plt"]
+    assert (tmp_path / "SC" / "IO2" / "batwind-pipe.custom.processed.json").exists()
+    assert not (tmp_path / "batwind-pipe.custom.processed.json").exists()
 
 
 def test_run_batwind_pipe_continues_after_single_file_failure(tmp_path, caplog):
@@ -274,7 +350,11 @@ def test_run_batwind_pipe_skips_movie_outputs_for_log_pipeline(monkeypatch, tmp_
     monkeypatch.setattr(
         batwind_pipe_module,
         "process_file_for_pipeline",
-        lambda pipeline_name: fake_process_file if pipeline_name == "log" else pytest.fail(f"unexpected pipeline {pipeline_name}"),
+        lambda pipeline_name: (
+            fake_process_file
+            if pipeline_name == "log"
+            else pytest.fail(f"unexpected pipeline {pipeline_name}")
+        ),
     )
 
     results = run_batwind_pipe(tmp_path)

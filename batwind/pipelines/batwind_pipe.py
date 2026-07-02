@@ -31,6 +31,8 @@ from batwind.pipelines.recorder import state_file_path
 log = logging.getLogger(__name__)
 PIPELINE_LOG_FORMAT = "[%(levelname)s] %(pipeline_source)s %(message)s"
 PIPELINE_COLOR_LOG_FORMAT = "%(log_color)s[%(levelname)s]%(reset)s %(pipeline_source)s %(message)s"
+COMPONENT_NAMES = ("SC", "IH", "GM")
+SUPPORTED_INPUT_SUFFIXES = {".plt", ".dat", ".bin", ".log"}
 
 
 class PipelineSourceFilter(logging.Filter):
@@ -108,9 +110,51 @@ def discover_input_files(directory: str | Path = ".", *, recursive: bool = False
     Discover supported input files in a directory.
     """
     base = Path(directory)
-    paths = base.rglob("*") if recursive else base.iterdir()
-    files = [path for path in paths if path.is_file() and path.suffix.lower() in {".plt", ".dat", ".bin", ".log"}]
+    if recursive:
+        log.info("Scanning %s recursively...", base)
+        paths = base.rglob("*")
+    else:
+        log.info("Scanning %s...", base)
+        scan_dirs = [base]
+        for component_name in COMPONENT_NAMES:
+            io2_dir = base / component_name / "IO2"
+            if io2_dir.is_dir():
+                log.info("Entering %s...", io2_dir)
+                scan_dirs.append(io2_dir)
+        paths = [path for scan_dir in scan_dirs for path in scan_dir.iterdir()]
+    files = [path for path in paths if path.is_file() and path.suffix.lower() in SUPPORTED_INPUT_SUFFIXES]
     return sorted(files)
+
+
+def tracking_root_for_file(directory: str | Path, file_path: str | Path) -> Path:
+    """
+    Return the state/artifact root for one discovered file.
+    """
+    directory_path = Path(directory).resolve()
+    path = Path(file_path).resolve()
+    try:
+        relative_path = path.relative_to(directory_path)
+    except ValueError:
+        return directory_path
+    if len(relative_path.parts) >= 3 and relative_path.parts[0] in COMPONENT_NAMES and relative_path.parts[1] == "IO2":
+        return directory_path / relative_path.parts[0] / relative_path.parts[1]
+    return directory_path
+
+
+def display_file_key_for_directory(
+    file_key: str,
+    *,
+    tracking_root: str | Path,
+    directory: str | Path,
+) -> str:
+    """
+    Map one tracked file key onto the directory-level results namespace.
+    """
+    tracking_root_path = Path(tracking_root).resolve()
+    directory_path = Path(directory).resolve()
+    if tracking_root_path == directory_path:
+        return str(file_key)
+    return relative_file_key(tracking_root_path / str(file_key), base_dir=directory_path)
 
 
 def pipeline_name_for_file(file_path: str | Path) -> str | None:
@@ -167,7 +211,7 @@ def run_batwind_pipe(
     *,
     pipeline: str | None = None,
     recursive: bool = False,
-    noclobber: bool = False,
+    noclobber: bool = True,
     include_file_hash: bool = False,
     array_offload_min_bytes: int = DEFAULT_ARRAY_OFFLOAD_MIN_BYTES,
     json_warn_bytes: int = DEFAULT_JSON_WARN_BYTES,
@@ -179,42 +223,51 @@ def run_batwind_pipe(
     """
     log.info("run_batwind_pipe...")
     files = discover_input_files(directory, recursive=recursive)
-    directory_path = Path(directory)
+    directory_path = Path(directory).resolve()
     pipeline_label = "auto" if pipeline is None else str(pipeline)
 
-    state_files: dict[str, Path] = {}
-    known_processed_by_pipeline: dict[str, set[str]] = {}
-    known_computed_by_pipeline: dict[str, dict[str, dict[str, object]]] = {}
+    state_files: dict[tuple[Path, str], Path] = {}
+    known_processed_by_state: dict[tuple[Path, str], set[str]] = {}
+    known_computed_by_state: dict[tuple[Path, str], dict[str, dict[str, object]]] = {}
     process_functions: dict[str, Callable[[Path], None]] = {}
-    selected: list[tuple[Path, str, Callable[[Path], None], str]] = []
+    selected: list[tuple[Path, str, Callable[[Path], None], Path, str]] = []
+
+    def ensure_state_loaded(tracking_root: Path, state_pipeline_name: str) -> None:
+        state_key = (tracking_root.resolve(), state_pipeline_name)
+        if state_key in state_files:
+            return
+        state_files[state_key] = state_file_path(tracking_root, pipeline_name=state_pipeline_name)
+        known_processed, known_computed = load_state(state_files[state_key])
+        known_processed_by_state[state_key] = known_processed
+        known_computed_by_state[state_key] = known_computed
 
     if process_file is not None:
         process_label = f"{process_file.__module__}.{process_file.__name__}"
         state_pipeline_name = "custom"
-        state_files[state_pipeline_name] = state_file_path(directory_path, pipeline_name=state_pipeline_name)
-        known_processed, known_computed = load_state(state_files[state_pipeline_name])
-        known_processed_by_pipeline[state_pipeline_name] = known_processed
-        known_computed_by_pipeline[state_pipeline_name] = known_computed
         for file_path in files:
-            selected.append((file_path, process_label, process_file, state_pipeline_name))
+            tracking_root = tracking_root_for_file(directory_path, file_path)
+            ensure_state_loaded(tracking_root, state_pipeline_name)
+            selected.append((file_path, process_label, process_file, tracking_root, state_pipeline_name))
+        if not state_files:
+            ensure_state_loaded(directory_path, state_pipeline_name)
     elif pipeline == "dummy":
         process_functions["dummy"] = process_file_for_pipeline("dummy")
-        state_files["dummy"] = state_file_path(directory_path, pipeline_name="dummy")
-        known_processed, known_computed = load_state(state_files["dummy"])
-        known_processed_by_pipeline["dummy"] = known_processed
-        known_computed_by_pipeline["dummy"] = known_computed
         for file_path in files:
-            selected.append((file_path, "dummy", process_functions["dummy"], "dummy"))
+            tracking_root = tracking_root_for_file(directory_path, file_path)
+            ensure_state_loaded(tracking_root, "dummy")
+            selected.append((file_path, "dummy", process_functions["dummy"], tracking_root, "dummy"))
+        if not state_files:
+            ensure_state_loaded(directory_path, "dummy")
     elif pipeline is not None:
         pipeline_name = str(pipeline)
         process_functions[pipeline_name] = process_file_for_pipeline(pipeline_name)
-        state_files[pipeline_name] = state_file_path(directory_path, pipeline_name=pipeline_name)
-        known_processed, known_computed = load_state(state_files[pipeline_name])
-        known_processed_by_pipeline[pipeline_name] = known_processed
-        known_computed_by_pipeline[pipeline_name] = known_computed
         for file_path in files:
             if pipeline_name_for_file(file_path) == pipeline_name:
-                selected.append((file_path, pipeline_name, process_functions[pipeline_name], pipeline_name))
+                tracking_root = tracking_root_for_file(directory_path, file_path)
+                ensure_state_loaded(tracking_root, pipeline_name)
+                selected.append((file_path, pipeline_name, process_functions[pipeline_name], tracking_root, pipeline_name))
+        if not state_files:
+            ensure_state_loaded(directory_path, pipeline_name)
     else:
         for file_path in files:
             resolved_pipeline = pipeline_name_for_file(file_path)
@@ -222,16 +275,14 @@ def run_batwind_pipe(
                 continue
             if resolved_pipeline not in process_functions:
                 process_functions[resolved_pipeline] = process_file_for_pipeline(resolved_pipeline)
-            if resolved_pipeline not in state_files:
-                state_files[resolved_pipeline] = state_file_path(directory_path, pipeline_name=resolved_pipeline)
-                known_processed, known_computed = load_state(state_files[resolved_pipeline])
-                known_processed_by_pipeline[resolved_pipeline] = known_processed
-                known_computed_by_pipeline[resolved_pipeline] = known_computed
+            tracking_root = tracking_root_for_file(directory_path, file_path)
+            ensure_state_loaded(tracking_root, resolved_pipeline)
             selected.append(
                 (
                     file_path,
                     resolved_pipeline,
                     process_functions[resolved_pipeline],
+                    tracking_root,
                     resolved_pipeline,
                 )
             )
@@ -245,12 +296,10 @@ def run_batwind_pipe(
         state_file=None if len(state_files) != 1 else next(iter(state_files.values())),
     )
 
-    for pipeline_name, pipeline_results in known_computed_by_pipeline.items():
-        if pipeline_name == "custom":
-            results.computed_results.update(pipeline_results)
-            continue
+    for (tracking_root, _state_pipeline_name), pipeline_results in known_computed_by_state.items():
         for file_key, payload in pipeline_results.items():
-            results.computed_results[file_key] = payload
+            display_key = display_file_key_for_directory(file_key, tracking_root=tracking_root, directory=directory_path)
+            results.computed_results[display_key] = payload
 
     log.debug(
         "run_batwind_pipe discovered=%s directory=%s noclobber=%s pipeline=%s recursive=%s",
@@ -262,27 +311,29 @@ def run_batwind_pipe(
     )
 
     if not selected:
-        for state_pipeline_name, state_file in state_files.items():
+        for state_key, state_file in state_files.items():
+            tracking_root, state_pipeline_name = state_key
             save_state(
                 state_file,
-                processed_keys=known_processed_by_pipeline[state_pipeline_name],
-                computed_results=known_computed_by_pipeline[state_pipeline_name],
+                processed_keys=known_processed_by_state[state_key],
+                computed_results=known_computed_by_state[state_key],
                 json_warn_bytes=int(json_warn_bytes),
             )
             if state_pipeline_name != "log":
                 results.movie_outputs.extend(
-                    write_recorded_png_movies(directory_path, known_computed_by_pipeline[state_pipeline_name])
+                    write_recorded_png_movies(tracking_root, known_computed_by_state[state_key])
                 )
         log.debug("run_batwind_pipe complete with no selected files")
         return results
 
     recorder = logging.getLogger("recorder")
     recorder.setLevel(logging.DEBUG)
-    artifacts_root = directory_path / "batwind-pipe.artifacts"
 
-    for file_path, process_label, active_process_file, state_pipeline_name in selected:
-        file_key = relative_file_key(file_path, base_dir=directory_path)
-        processed_keys = known_processed_by_pipeline[state_pipeline_name]
+    for file_path, process_label, active_process_file, tracking_root, state_pipeline_name in selected:
+        state_key = (tracking_root.resolve(), state_pipeline_name)
+        file_key = relative_file_key(file_path, base_dir=tracking_root)
+        display_file_key = display_file_key_for_directory(file_key, tracking_root=tracking_root, directory=directory_path)
+        processed_keys = known_processed_by_state[state_key]
 
         if noclobber and file_key in processed_keys:
             results.skipped_files.append(file_path)
@@ -303,7 +354,7 @@ def run_batwind_pipe(
         recorder_handler = BatwindRecordHandler(
             file_results,
             file_key=file_key,
-            artifacts_root=artifacts_root,
+            artifacts_root=tracking_root / "batwind-pipe.artifacts",
             array_offload_min_bytes=array_offload_min_bytes,
         )
         recorder.addHandler(recorder_handler)
@@ -330,12 +381,12 @@ def run_batwind_pipe(
                 meta["end_time_utc"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             recorder.removeHandler(recorder_handler)
             recorder_handler.close()
-            results.computed_results[file_key] = file_results
-            known_computed_by_pipeline[state_pipeline_name][file_key] = file_results
+            results.computed_results[display_file_key] = file_results
+            known_computed_by_state[state_key][file_key] = file_results
             save_state(
-                state_files[state_pipeline_name],
+                state_files[state_key],
                 processed_keys=processed_keys,
-                computed_results=known_computed_by_pipeline[state_pipeline_name],
+                computed_results=known_computed_by_state[state_key],
                 json_warn_bytes=int(json_warn_bytes),
             )
 
@@ -348,9 +399,9 @@ def run_batwind_pipe(
         len(results.failed_files),
         len(results.skipped_files),
     )
-    for state_pipeline_name, pipeline_results in known_computed_by_pipeline.items():
+    for (tracking_root, state_pipeline_name), pipeline_results in known_computed_by_state.items():
         if state_pipeline_name != "log":
-            results.movie_outputs.extend(write_recorded_png_movies(directory_path, pipeline_results))
+            results.movie_outputs.extend(write_recorded_png_movies(tracking_root, pipeline_results))
     return results
 
 
@@ -389,9 +440,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Recorder logger level for stream output (default: WARNING).",
     )
     parser.add_argument(
-        "--noclobber",
+        "--clobber",
         action="store_true",
-        help="Skip files already listed in the batwind-pipe state file.",
+        help="Reprocess files already listed in the batwind-pipe state file.",
     )
     parser.add_argument(
         "--file-hash",
@@ -432,7 +483,7 @@ def main(argv: list[str] | None = None) -> int:
         args.directory,
         pipeline=args.pipeline,
         recursive=bool(args.recursive),
-        noclobber=bool(args.noclobber),
+        noclobber=not bool(args.clobber),
         include_file_hash=bool(args.file_hash),
         array_offload_min_bytes=int(args.array_offload_min_bytes),
         json_warn_bytes=int(args.json_warn_bytes),
