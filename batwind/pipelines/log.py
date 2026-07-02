@@ -10,6 +10,9 @@ import re
 import matplotlib.pyplot as plt
 import numpy as np
 
+from batwind.param_in import ParamIn
+from batwind.param_in import StarParams
+
 log = logging.getLogger(__name__)
 add_record = logging.getLogger(f"recorder.{__name__}").debug
 
@@ -72,6 +75,16 @@ def find_run_root(directory: Path) -> Path | None:
         if (candidate / "PARAM.in").exists():
             return candidate
     return None
+
+
+def star_params_for_run_root(run_root: Path | None) -> StarParams | None:
+    """Load star parameters from one run root PARAM.in, if present."""
+    if run_root is None:
+        return None
+    param_path = run_root / "PARAM.in"
+    if not param_path.exists():
+        return None
+    return StarParams.from_param_in(ParamIn.from_file(param_path))
 
 
 def load_log_file(path: Path) -> tuple[str, list[str], np.ndarray]:
@@ -535,11 +548,26 @@ def corrected_panel_series(
     members: list[tuple[str, int]],
     member_lookup: dict[tuple[str, str], list[tuple[str, int]]],
     data: np.ndarray,
+    star_params: StarParams | None,
 ) -> tuple[list[tuple[str, np.ndarray]], str]:
     """Return one plotted series group."""
     out = [(radius_label, np.array(data[:, column_index], copy=True)) for radius_label, column_index in members]
     title = flux_panel_title(base_name, variant_name)
-    return out, title
+    if base_name != "jz" or variant_name != "total" or star_params is None:
+        return out, title
+
+    mass_members = member_lookup.get(("rho", "total"))
+    if mass_members is None or len(mass_members) != len(members):
+        return out, title
+    if [label for label, _ in mass_members] != [label for label, _ in members]:
+        return out, title
+
+    radii_m = star_params.radius * np.array([float(label) for label, _ in members], dtype=float)
+    mass_flux = np.column_stack([data[:, column_index] for _, column_index in mass_members])
+    angular_flux = np.column_stack([data[:, column_index] for _, column_index in members])
+    corrected = angular_flux + star_params.rotation_rate * mass_flux * radii_m[None, :] ** 2
+    corrected_out = [(radius_label, corrected[:, i]) for i, (radius_label, _) in enumerate(members)]
+    return corrected_out, f"{title} (inertial)"
 
 
 def plot_flux_summary(
@@ -552,6 +580,7 @@ def plot_flux_summary(
     data: np.ndarray,
     segment_label: str,
     sessions: list[SessionInfo],
+    star_params: StarParams | None,
 ) -> Path | None:
     """Plot stacked summaries of rho and jz shell flux logs, if present."""
     all_specs = axis_specs(columns)
@@ -580,6 +609,7 @@ def plot_flux_summary(
             members=members,
             member_lookup=member_lookup,
             data=data,
+            star_params=star_params,
         )
         series_values: list[np.ndarray] = []
         for radius_label, values in plotted_members:
@@ -623,6 +653,7 @@ def process_log_file(file_path: str | Path) -> None:
         else "fresh segment starting at it=0"
     )
     run_root = find_run_root(path.parent)
+    star_params = star_params_for_run_root(run_root)
     sessions = session_infos(run_root, first_iteration)
     stem = path.stem
 
@@ -647,6 +678,7 @@ def process_log_file(file_path: str | Path) -> None:
         data=data,
         segment_label=segment_label,
         sessions=sessions,
+        star_params=star_params,
     )
     if flux_summary_path is not None:
         add_record("log_rho_jz_png %r", str(flux_summary_path.relative_to(path.parent)))
