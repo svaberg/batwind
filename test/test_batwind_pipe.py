@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import logging
+import os
 from pathlib import Path
 
 import numpy as np
@@ -110,6 +112,55 @@ def test_run_batwind_pipe_clobber_reprocesses_files(tmp_path):
 
     assert [path.name for path in first.processed_files] == ["alpha.plt", "beta.plt"]
     assert [path.name for path in second.processed_files] == ["alpha.plt", "beta.plt"]
+    assert second.skipped_files == []
+
+
+def test_run_batwind_pipe_reprocesses_when_source_file_is_newer(tmp_path):
+    file_path = tmp_path / "alpha.plt"
+    file_path.write_text("")
+    calls: list[str] = []
+
+    def process_file(path):
+        calls.append(Path(path).name)
+
+    run_batwind_pipe(tmp_path, process_file=process_file)
+
+    state_path = tmp_path / "batwind-pipe.custom.processed.json"
+    payload = json.loads(state_path.read_text())
+    end_time = datetime.fromisoformat(
+        payload["computed_results"]["alpha.plt"]["meta"]["end_time_utc"].replace("Z", "+00:00")
+    )
+    newer_ns = int(end_time.timestamp() * 1_000_000_000) + 2_000_000_000
+    os.utime(file_path, ns=(newer_ns, newer_ns))
+
+    second = run_batwind_pipe(tmp_path, process_file=process_file)
+
+    assert calls == ["alpha.plt", "alpha.plt"]
+    assert [path.name for path in second.processed_files] == ["alpha.plt"]
+    assert second.skipped_files == []
+
+
+def test_run_batwind_pipe_reprocesses_when_recorded_output_is_missing(tmp_path):
+    file_path = tmp_path / "alpha.plt"
+    file_path.write_text("")
+    output_path = tmp_path / "outputs" / "alpha.txt"
+    calls: list[str] = []
+
+    def process_file(path):
+        calls.append(Path(path).name)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("done")
+        recorder_log = logging.getLogger("recorder.test_pipeline")
+        recorder_log.setLevel(logging.DEBUG)
+        recorder_log.debug("output_txt %r", str(output_path.relative_to(tmp_path)))
+
+    run_batwind_pipe(tmp_path, process_file=process_file)
+    output_path.unlink()
+
+    second = run_batwind_pipe(tmp_path, process_file=process_file)
+
+    assert calls == ["alpha.plt", "alpha.plt"]
+    assert [path.name for path in second.processed_files] == ["alpha.plt"]
     assert second.skipped_files == []
 
 

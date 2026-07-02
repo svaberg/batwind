@@ -157,6 +157,82 @@ def display_file_key_for_directory(
     return relative_file_key(tracking_root_path / str(file_key), base_dir=directory_path)
 
 
+def parsed_utc_timestamp(value: object) -> datetime | None:
+    """
+    Parse one stored UTC timestamp string from recorder state.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def recorded_artifact_paths(recorded_value: object, *, tracking_root: Path) -> list[Path]:
+    """
+    Collect relative artifact paths recorded for one processed file.
+    """
+    out: list[Path] = []
+
+    def artifact_path(text: str) -> Path | None:
+        path = Path(text)
+        if path.is_absolute():
+            return None
+        if path.suffix == "" and len(path.parts) == 1:
+            return None
+        return tracking_root / path
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            path_value = value.get("value")
+            if isinstance(path_value, str):
+                path = artifact_path(path_value)
+                if path is not None:
+                    out.append(path)
+            artifact_value = value.get("path")
+            if isinstance(artifact_value, str):
+                path = artifact_path(artifact_value)
+                if path is not None:
+                    out.append(path)
+            for item in value.values():
+                visit(item)
+            return
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    visit(recorded_value)
+    return out
+
+
+def stale_processed_reason(
+    file_path: Path,
+    file_results: object,
+    *,
+    tracking_root: Path,
+) -> str | None:
+    """
+    Return one reprocess reason when recorded state for a file is stale.
+    """
+    if not isinstance(file_results, dict):
+        return "missing recorded result"
+    meta = file_results.get("meta")
+    if not isinstance(meta, dict):
+        return "missing recorded metadata"
+    if meta.get("status") != "processed":
+        return "recorded status is not processed"
+    processed_at = parsed_utc_timestamp(meta.get("end_time_utc"))
+    if processed_at is None:
+        return "missing recorded completion time"
+    if file_path.stat().st_mtime_ns > int(processed_at.timestamp() * 1_000_000_000):
+        return "source file is newer"
+    for artifact_path in recorded_artifact_paths(file_results, tracking_root=tracking_root):
+        if not artifact_path.exists():
+            return f"missing recorded output {artifact_path.relative_to(tracking_root).as_posix()}"
+    return None
+
+
 def pipeline_name_for_file(file_path: str | Path) -> str | None:
     """
     Infer built-in pipeline from the input filename prefix.
@@ -334,11 +410,18 @@ def run_batwind_pipe(
         file_key = relative_file_key(file_path, base_dir=tracking_root)
         display_file_key = display_file_key_for_directory(file_key, tracking_root=tracking_root, directory=directory_path)
         processed_keys = known_processed_by_state[state_key]
+        stale_reason = stale_processed_reason(
+            file_path,
+            known_computed_by_state[state_key].get(file_key),
+            tracking_root=tracking_root,
+        )
 
-        if noclobber and file_key in processed_keys:
+        if noclobber and file_key in processed_keys and stale_reason is None:
             results.skipped_files.append(file_path)
             log.debug("batwind_pipe.skip_processed | file=%s", file_path.name)
             continue
+        if noclobber and file_key in processed_keys:
+            log.info("Reprocessing %s (%s)...", display_file_key, stale_reason)
 
         file_results: dict[str, object] = {
             "meta": {
