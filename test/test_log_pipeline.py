@@ -27,6 +27,15 @@ def test_flux_panel_title_uses_human_readable_labels():
     assert log_pipeline.flux_panel_title("rho", "in") == "Mass Flux In"
 
 
+def test_nonzero_log_magnitudes_uses_absolute_values_and_drops_zeros():
+    values = log_pipeline.np.array([-3.0, 0.0, 2.0, -1.0])
+    assert log_pipeline.np.array_equal(log_pipeline.nonzero_log_magnitudes(values), log_pipeline.np.array([3.0, 2.0, 1.0]))
+
+
+def test_log_axis_limits_fall_back_for_all_zero_values():
+    assert log_pipeline.log_axis_limits(log_pipeline.np.array([0.0, 0.0])) == (1.0e-12, 1.0)
+
+
 def test_process_log_file_writes_plots_and_session_report(tmp_path):
     (tmp_path / "PARAM.in").write_text(
         "\n".join(

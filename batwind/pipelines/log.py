@@ -102,6 +102,56 @@ def padded_limits(values: np.ndarray) -> tuple[float, float]:
     return ymin - pad, ymax + pad
 
 
+def positive_log_limits(values: np.ndarray) -> tuple[float, float]:
+    """Compute multiplicatively padded y-limits for positive-only log panels."""
+    finite = values[np.isfinite(values)]
+    positive = finite[finite > 0.0]
+    if positive.size == 0:
+        raise ValueError("positive_log_limits requires at least one positive value")
+    ymin = float(np.min(positive))
+    ymax = float(np.max(positive))
+    if ymin == ymax:
+        return ymin / 1.5, ymax * 1.5
+    pad_factor = (ymax / ymin) ** 0.05
+    return ymin / pad_factor, ymax * pad_factor
+
+
+def nonzero_log_magnitudes(values: np.ndarray) -> np.ndarray:
+    """Return positive magnitudes for all nonzero finite values in one series."""
+    finite = values[np.isfinite(values)]
+    return np.abs(finite[finite != 0.0])
+
+
+def log_axis_limits(values: np.ndarray) -> tuple[float, float]:
+    """Compute y-limits for one signed series drawn on a log-magnitude axis."""
+    magnitudes = nonzero_log_magnitudes(values)
+    if magnitudes.size == 0:
+        return 1.0e-12, 1.0
+    return positive_log_limits(magnitudes)
+
+
+def plot_signed_log_series(
+    axis: plt.Axes,
+    iteration: np.ndarray,
+    values: np.ndarray,
+    *,
+    linewidth: float,
+    label: str | None = None,
+) -> None:
+    """Plot positive values solid and absolute negative values dashed on one log axis."""
+    positive = np.where(values > 0.0, values, np.nan)
+    line, = axis.plot(iteration, positive, linewidth=linewidth, label=label)
+    negative = np.where(values < 0.0, -values, np.nan)
+    if np.any(np.isfinite(negative)):
+        axis.plot(iteration, negative, linewidth=linewidth, linestyle="--", color=line.get_color())
+
+
+def apply_log_y_scale(axis: plt.Axes, values: np.ndarray) -> None:
+    """Apply one log y-axis and matching limits to one log-derived plot axis."""
+    axis.set_yscale("log")
+    axis.set_ylim(*log_axis_limits(values))
+
+
 def bool_token(value: bool) -> str:
     """Format one boolean in BATSRUS-style ``T/F`` text."""
     return "T" if value else "F"
@@ -397,11 +447,10 @@ def plot_all_columns(
         values = data[:, column_index]
         shade_session_ranges(axis, iteration, sessions)
         shade_zdi_ramp_ranges(axis, iteration, sessions)
-        axis.plot(iteration, values, linewidth=1.5)
+        plot_signed_log_series(axis, iteration, values, linewidth=1.5)
         axis.set_ylabel(column_name)
-        axis.set_ylim(*padded_limits(values))
+        apply_log_y_scale(axis, values)
         axis.grid(True, alpha=0.3)
-        axis.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
 
     axes[0].set_title("all columns")
     if sessions:
@@ -567,10 +616,10 @@ def plot_flux_summary(
         series_values: list[np.ndarray] = []
         for radius_label, values in plotted_members:
             series_values.append(values)
-            axis.plot(iteration, values, linewidth=2, label=f"R={radius_label}")
+            plot_signed_log_series(axis, iteration, values, linewidth=2, label=f"R={radius_label}")
         axis.set_ylabel(axis_title)
         axis.set_title(axis_title)
-        axis.set_ylim(*padded_limits(np.concatenate(series_values)))
+        apply_log_y_scale(axis, np.concatenate(series_values))
         axis.grid(True, alpha=0.3)
         axis.legend(loc="best")
 
