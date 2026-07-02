@@ -17,33 +17,19 @@ log = logging.getLogger(__name__)
 add_record = logging.getLogger(f"recorder.{__name__}").debug
 
 
-def raw_field_available(smart_ds: SmartDs, name: str) -> bool:
-    """Return whether one field is present in the raw dataset."""
-    raw = getattr(smart_ds, "raw", None)
-    variables = getattr(raw, "variables", None)
-    if variables is not None:
-        return name in variables
-    try:
-        smart_ds[name]
-    except (IndexError, KeyError):
-        return False
-    return True
+def load_shell_axis_indices(smart_ds: SmartDs, name: str) -> tuple[np.ndarray, int]:
+    """Load one shell logical index axis and require contiguous 1-based values."""
+    axis = np.ravel(np.asarray(smart_ds[name], dtype=int))
+    size = int(np.max(axis))
+    expected = np.arange(1, size + 1, dtype=int)
+    if not np.array_equal(np.unique(axis), expected):
+        raise ValueError(f"Expected contiguous 1-based shell {name} indices")
+    return axis, size
 
 
-def shell_cell_values(
-    values,
-    *,
-    shell_mask,
-    lon_deg,
-    lat_deg,
-    lon_nodes,
-    lat_nodes,
-):
-    """Convert nodal shell values on corner nodes into explicit cell values."""
-    node_values = np.full((lat_nodes.size, lon_nodes.size), np.nan)
-    lat_index = np.searchsorted(lat_nodes, np.round(lat_deg[shell_mask], 10))
-    lon_index = np.searchsorted(lon_nodes, np.round(lon_deg[shell_mask], 10))
-    node_values[lat_index, lon_index] = values[shell_mask]
+def shell_cell_values(node_values):
+    """Convert one structured nodal shell field into explicit cell values."""
+    node_values = np.asarray(node_values, dtype=float)
     return 0.25 * (
         node_values[:-1, :-1]
         + node_values[1:, :-1]
@@ -52,90 +38,77 @@ def shell_cell_values(
     )
 
 
-def load_shell_coordinates(smart_ds: SmartDs):
-    """Load native shell longitude/latitude coordinates and sorted node axes."""
-    lon_all = np.ravel(smart_ds["Lon [deg]"])
-    lat_all = np.ravel(smart_ds["Lat [deg]"])
+def load_magnetic_shell_grid(smart_ds: SmartDs):
+    """Load one native magnetic shell I/J grid and its longitude/latitude nodes."""
+    i_all, n_lon = load_shell_axis_indices(smart_ds, "I")
+    j_all, n_lat = load_shell_axis_indices(smart_ds, "J")
+    expected_i = np.tile(np.arange(1, n_lon + 1, dtype=int), n_lat)
+    expected_j = np.repeat(np.arange(1, n_lat + 1, dtype=int), n_lon)
+    if not np.array_equal(i_all, expected_i) or not np.array_equal(j_all, expected_j):
+        raise ValueError("Expected magnetic shell rows ordered with I fastest and J slowest")
 
-    lon_nodes = np.unique(np.round(lon_all, 10))
-    lat_nodes = np.unique(np.round(lat_all, 10))
-    return lon_all, lat_all, lon_nodes, lat_nodes
+    grid_shape = (n_lat, n_lon)
+    lon_grid = np.asarray(smart_ds["Lon [deg]"], dtype=float).reshape(grid_shape)
+    lat_grid = np.asarray(smart_ds["Lat [deg]"], dtype=float).reshape(grid_shape)
+    lon_nodes = lon_grid[0, :].astype(float)
+    lat_nodes = lat_grid[:, 0].astype(float)
+    if not np.allclose(lon_grid, lon_nodes[None, :], rtol=0.0, atol=1.0e-10):
+        raise ValueError("Expected magnetic shell longitude to follow the native I axis")
+    if not np.allclose(lat_grid, lat_nodes[:, None], rtol=0.0, atol=1.0e-10):
+        raise ValueError("Expected magnetic shell latitude to follow the native J axis")
+    return grid_shape, lon_nodes, lat_nodes
 
 
 def load_shell_grid(smart_ds: SmartDs):
-    """Load native shell coordinates and precompute masks and cell areas."""
-    r_all = np.ravel(smart_ds["R [R]"])
-    star_radius_m = float(smart_ds["RBODY [m]"])
-    lon_all, lat_all, lon_nodes, lat_nodes = load_shell_coordinates(smart_ds)
-    shell_radii_r = [float(radius_r) for radius_r in np.unique(np.round(r_all, 10))]
+    """Load one native shell I/J/K grid and precompute per-shell cell areas."""
+    i_all, n_radius = load_shell_axis_indices(smart_ds, "I")
+    j_all, n_lon = load_shell_axis_indices(smart_ds, "J")
+    k_all, n_lat = load_shell_axis_indices(smart_ds, "K")
+    expected_i = np.tile(np.arange(1, n_radius + 1, dtype=int), n_lon * n_lat)
+    expected_j = np.tile(np.repeat(np.arange(1, n_lon + 1, dtype=int), n_radius), n_lat)
+    expected_k = np.repeat(np.arange(1, n_lat + 1, dtype=int), n_radius * n_lon)
+    if not np.array_equal(i_all, expected_i) or not np.array_equal(j_all, expected_j) or not np.array_equal(k_all, expected_k):
+        raise ValueError("Expected shell rows ordered with I fastest, then J, then K")
+
+    grid_shape = (n_lat, n_lon, n_radius)
+    r_grid = np.asarray(smart_ds["R [R]"], dtype=float).reshape(grid_shape)
+    lon_grid = np.asarray(smart_ds["Lon [deg]"], dtype=float).reshape(grid_shape)
+    lat_grid = np.asarray(smart_ds["Lat [deg]"], dtype=float).reshape(grid_shape)
+    shell_radii_r = r_grid[0, 0, :].astype(float)
+    lon_nodes = lon_grid[0, :, 0].astype(float)
+    lat_nodes = lat_grid[:, 0, 0].astype(float)
+    if not np.allclose(r_grid, shell_radii_r[None, None, :], rtol=0.0, atol=1.0e-10):
+        raise ValueError("Expected shell radius to follow the native I axis")
+    if not np.allclose(lon_grid, lon_nodes[None, :, None], rtol=0.0, atol=1.0e-10):
+        raise ValueError("Expected shell longitude to follow the native J axis")
+    if not np.allclose(lat_grid, lat_nodes[:, None, None], rtol=0.0, atol=1.0e-10):
+        raise ValueError("Expected shell latitude to follow the native K axis")
+
+    star_radius_m = float(np.asarray(smart_ds["RBODY [m]"], dtype=float).reshape(-1)[0])
 
     solid_angle = (
         np.sin(np.deg2rad(lat_nodes[1:]))[:, None] - np.sin(np.deg2rad(lat_nodes[:-1]))[:, None]
     ) * np.deg2rad(np.diff(lon_nodes))[None, :]
 
-    shell_masks = []
-    shell_areas_m2 = []
-    for radius_r in shell_radii_r:
-        shell_mask = np.isclose(r_all, radius_r, rtol=0.0, atol=1.0e-10)
-        shell_masks.append(shell_mask)
-        shell_areas_m2.append((float(radius_r) * star_radius_m) ** 2 * solid_angle)
-
-    height_r = [radius_r - 1.0 for radius_r in shell_radii_r]
-    return lon_all, lat_all, shell_radii_r, lon_nodes, lat_nodes, shell_masks, shell_areas_m2, height_r
-
-
-def shell_surface_map(
-    values,
-    *,
-    lon_deg,
-    lat_deg,
-    lon_nodes,
-    lat_nodes,
-):
-    """Build one lon/lat cell map from a single-shell nodal field."""
-    values = np.ravel(np.asarray(values, dtype=float))
-    shell_mask = np.ones(values.shape, dtype=bool)
-    return shell_cell_values(
-        values,
-        shell_mask=shell_mask,
-        lon_deg=lon_deg,
-        lat_deg=lat_deg,
-        lon_nodes=lon_nodes,
-        lat_nodes=lat_nodes,
-    )
+    shell_areas_m2 = [float(radius_r) ** 2 * star_radius_m ** 2 * solid_angle for radius_r in shell_radii_r]
+    shell_radii_r = [float(radius_r) for radius_r in shell_radii_r]
+    return grid_shape, shell_radii_r, lon_nodes, lat_nodes, shell_areas_m2
 
 
 def shell_map_and_profile(
     values,
     *,
-    shell_masks,
+    grid_shape,
     shell_areas_m2,
-    lon_deg,
-    lat_deg,
-    lon_nodes,
-    lat_nodes,
 ):
     """Build outer-shell cell map and integrated radial profile for one field."""
+    node_values = np.asarray(values, dtype=float).reshape(grid_shape)
     integrated_values = []
-    for shell_mask, area in zip(shell_masks, shell_areas_m2):
-        shell_cells = shell_cell_values(
-            values,
-            shell_mask=shell_mask,
-            lon_deg=lon_deg,
-            lat_deg=lat_deg,
-            lon_nodes=lon_nodes,
-            lat_nodes=lat_nodes,
-        )
+    for radius_index, area in enumerate(shell_areas_m2):
+        shell_cells = shell_cell_values(node_values[:, :, radius_index])
         integrated_values.append(float(np.sum(shell_cells * area)))
 
-    outer_map = shell_cell_values(
-        values,
-        shell_mask=shell_masks[-1],
-        lon_deg=lon_deg,
-        lat_deg=lat_deg,
-        lon_nodes=lon_nodes,
-        lat_nodes=lat_nodes,
-    )
+    outer_map = shell_cell_values(node_values[:, :, -1])
     return outer_map, integrated_values
 
 
@@ -173,7 +146,7 @@ def process_magnetic_shell_file(
     """Plot native magnetic shell components over longitude and latitude."""
     stage_start = perf_counter()
     log.info("Computing shell magnetic component maps...")
-    lon_all, lat_all, lon_nodes, lat_nodes = load_shell_coordinates(smart_ds)
+    grid_shape, lon_nodes, lat_nodes = load_magnetic_shell_grid(smart_ds)
     component_specs = (
         ("B_r [T]", "Radial Magnetic Field", "B_r [T]"),
         ("bphi [T]", "Azimuthal Magnetic Field", "B_phi [T]"),
@@ -182,13 +155,7 @@ def process_magnetic_shell_file(
     component_maps = []
     for field_name, title, colorbar_label in component_specs:
         component_maps.append((
-            shell_surface_map(
-            smart_ds[field_name],
-            lon_deg=lon_all,
-            lat_deg=lat_all,
-            lon_nodes=lon_nodes,
-            lat_nodes=lat_nodes,
-            ),
+            shell_cell_values(np.asarray(smart_ds[field_name], dtype=float).reshape(grid_shape)),
             title,
             colorbar_label,
         ))
@@ -217,19 +184,22 @@ def process_plt_file(file_path: str | Path) -> None:
 
     # Start: load dataset, attach the graph-backed fields, and build shell geometry.
     stage_start = perf_counter()
-    log.info("Loading shell dataset and preparing native shell grid...")
+    log.info("Loading shell dataset...")
     smart_ds = SmartDs.from_file(path, batsrus=True, spherical=True)
-    if not raw_field_available(smart_ds, "R [R]"):
+    if "R [R]" not in smart_ds.raw.variables:
+        log.info("Using native shell I/J grid...")
         process_magnetic_shell_file(
             smart_ds,
             path=path,
             output_dir=output_dir,
             prefix=prefix,
         )
-        log.debug("Loading shell dataset and preparing native shell grid complete in %.2f s.", perf_counter() - stage_start)
+        log.debug("Loading shell dataset complete in %.2f s.", perf_counter() - stage_start)
         return
-    lon_all, lat_all, shell_radii_r, lon_nodes, lat_nodes, shell_masks, shell_areas_m2, height_r = load_shell_grid(smart_ds)
-    log.debug("Loading shell dataset and preparing native shell grid complete in %.2f s.", perf_counter() - stage_start)
+    log.info("Using native shell I/J/K grid...")
+    grid_shape, shell_radii_r, lon_nodes, lat_nodes, shell_areas_m2 = load_shell_grid(smart_ds)
+    height_r = [radius_r - 1.0 for radius_r in shell_radii_r]
+    log.debug("Loading shell dataset complete in %.2f s.", perf_counter() - stage_start)
 
     # Start: compute, plot, and record shell wind mass flux.
     stage_start = perf_counter()
@@ -237,12 +207,8 @@ def process_plt_file(file_path: str | Path) -> None:
     mass_flux = np.ravel(smart_ds["mass_flux [kg/m^2/s]"])
     mass_flux_map, mass_loss_kg_s = shell_map_and_profile(
         mass_flux,
-        shell_masks=shell_masks,
+        grid_shape=grid_shape,
         shell_areas_m2=shell_areas_m2,
-        lon_deg=lon_all,
-        lat_deg=lat_all,
-        lon_nodes=lon_nodes,
-        lat_nodes=lat_nodes,
     )
 
     figure, axis = plt.subplots(figsize=(7, 5), constrained_layout=True)
@@ -278,12 +244,8 @@ def process_plt_file(file_path: str | Path) -> None:
     torque_density = np.ravel(smart_ds["total_torque_density [N/m]"])
     torque_map, total_torque_nm = shell_map_and_profile(
         torque_density,
-        shell_masks=shell_masks,
+        grid_shape=grid_shape,
         shell_areas_m2=shell_areas_m2,
-        lon_deg=lon_all,
-        lat_deg=lat_all,
-        lon_nodes=lon_nodes,
-        lat_nodes=lat_nodes,
     )
 
     figure, axis = plt.subplots(figsize=(7, 5), constrained_layout=True)
@@ -318,12 +280,8 @@ def process_plt_file(file_path: str | Path) -> None:
     energy_flux = np.ravel(smart_ds["energy_flux [W/m^2]"])
     energy_map, energy_flow_w = shell_map_and_profile(
         energy_flux,
-        shell_masks=shell_masks,
+        grid_shape=grid_shape,
         shell_areas_m2=shell_areas_m2,
-        lon_deg=lon_all,
-        lat_deg=lat_all,
-        lon_nodes=lon_nodes,
-        lat_nodes=lat_nodes,
     )
 
     figure, axis = plt.subplots(figsize=(7, 5), constrained_layout=True)
@@ -358,12 +316,8 @@ def process_plt_file(file_path: str | Path) -> None:
     open_flux_density = np.abs(np.ravel(smart_ds["B_r [T]"]))
     open_flux_map, open_flux_wb = shell_map_and_profile(
         open_flux_density,
-        shell_masks=shell_masks,
+        grid_shape=grid_shape,
         shell_areas_m2=shell_areas_m2,
-        lon_deg=lon_all,
-        lat_deg=lat_all,
-        lon_nodes=lon_nodes,
-        lat_nodes=lat_nodes,
     )
 
     figure, axis = plt.subplots(figsize=(7, 5), constrained_layout=True)
