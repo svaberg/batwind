@@ -38,7 +38,6 @@ TRACKED_SCALAR_NAMES = {
     "ZdiRampIterStart",
     "ZdiRampIterStop",
 }
-ROTATING_FRAME_ANGULAR_BASES = {"jx", "jy", "jz"}
 FLUX_DISPLAY_NAMES = {
     "rho": "Mass Flux",
     "jx": "Angular Momentum Flux (x)",
@@ -515,18 +514,6 @@ def axis_specs(columns: list[str]) -> list[tuple[str, str, list[tuple[str, int]]
     return specs
 
 
-def fit_corotation_correction(mass_flux: np.ndarray, angular_flux: np.ndarray, radii_r: np.ndarray) -> float | None:
-    """Fit one corotation correction for rotating-frame angular flux logs."""
-    q = mass_flux * radii_r[None, :] ** 2
-    q_centered = q - np.mean(q, axis=1, keepdims=True)
-    j_centered = angular_flux - np.mean(angular_flux, axis=1, keepdims=True)
-    denominator = float(np.sum(q_centered * q_centered))
-    if denominator == 0.0:
-        return None
-    numerator = float(np.sum(j_centered * q_centered))
-    return -numerator / denominator
-
-
 def flux_panel_title(base_name: str, variant_name: str) -> str:
     """Return a human-readable title for one flux panel."""
     base_title = FLUX_DISPLAY_NAMES.get(base_name, base_name)
@@ -549,29 +536,10 @@ def corrected_panel_series(
     member_lookup: dict[tuple[str, str], list[tuple[str, int]]],
     data: np.ndarray,
 ) -> tuple[list[tuple[str, np.ndarray]], str]:
-    """Return one plotted series group, with corotation correction if available."""
+    """Return one plotted series group."""
     out = [(radius_label, np.array(data[:, column_index], copy=True)) for radius_label, column_index in members]
     title = flux_panel_title(base_name, variant_name)
-
-    if base_name not in ROTATING_FRAME_ANGULAR_BASES:
-        return out, title
-
-    mass_members = member_lookup.get(("rho", variant_name))
-    if mass_members is None or len(mass_members) != len(members):
-        return out, title
-    if [label for label, _ in mass_members] != [label for label, _ in members]:
-        return out, title
-
-    radii_r = np.array([float(label) for label, _ in members], dtype=float)
-    mass_flux = np.column_stack([data[:, column_index] for _, column_index in mass_members])
-    angular_flux = np.column_stack([data[:, column_index] for _, column_index in members])
-    correction = fit_corotation_correction(mass_flux, angular_flux, radii_r)
-    if correction is None:
-        return out, title
-
-    corrected = angular_flux + correction * mass_flux * radii_r[None, :] ** 2
-    corrected_out = [(radius_label, corrected[:, i]) for i, (radius_label, _) in enumerate(members)]
-    return corrected_out, f"{title} (estimated inertial)"
+    return out, title
 
 
 def plot_flux_summary(

@@ -27,6 +27,33 @@ def test_flux_panel_title_uses_human_readable_labels():
     assert log_pipeline.flux_panel_title("rho", "in") == "Mass Flux In"
 
 
+def test_corrected_panel_series_returns_raw_jz_values():
+    data = log_pipeline.np.array(
+        [
+            [10.0, 1.0, 2.0, 3.0, 7.0, 8.0, 9.0],
+            [20.0, 4.0, 5.0, 6.0, 10.0, 11.0, 12.0],
+        ]
+    )
+    member_lookup = {
+        ("rho", "total"): [("20", 1), ("30", 2), ("40", 3)],
+        ("jz", "total"): [("20", 4), ("30", 5), ("40", 6)],
+    }
+
+    plotted, title = log_pipeline.corrected_panel_series(
+        base_name="jz",
+        variant_name="total",
+        members=member_lookup[("jz", "total")],
+        member_lookup=member_lookup,
+        data=data,
+    )
+
+    assert title == "Angular Momentum Flux"
+    assert [radius for radius, _ in plotted] == ["20", "30", "40"]
+    assert log_pipeline.np.array_equal(plotted[0][1], data[:, 4])
+    assert log_pipeline.np.array_equal(plotted[1][1], data[:, 5])
+    assert log_pipeline.np.array_equal(plotted[2][1], data[:, 6])
+
+
 def test_nonzero_log_magnitudes_uses_absolute_values_and_drops_zeros():
     values = log_pipeline.np.array([-3.0, 0.0, 2.0, -1.0])
     assert log_pipeline.np.array_equal(log_pipeline.nonzero_log_magnitudes(values), log_pipeline.np.array([3.0, 2.0, 1.0]))
