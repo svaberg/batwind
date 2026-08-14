@@ -894,6 +894,27 @@ def save_los_images(
     los_example_png = output_dir / f"{prefix}.rho2_los_example.png"
     plot_example_los_colormesh_npz(los_example_npz, los_example_png)
 
+    add_record("volume_rho2_los_npz %r", str(los_npz.relative_to(parent_dir)))
+    add_record("volume_rho2_los_png %r", str(los_png.relative_to(parent_dir)))
+    add_record("volume_rho2_los_side_npz %r", str(los_side_npz.relative_to(parent_dir)))
+    add_record("volume_rho2_los_side_png %r", str(los_side_png.relative_to(parent_dir)))
+    add_record("volume_rho2_los_example_npz %r", str(los_example_npz.relative_to(parent_dir)))
+    add_record("volume_rho2_los_example_png %r", str(los_example_png.relative_to(parent_dir)))
+    add_record("volume_rho2_los_image_n %r", image_n)
+    add_record("volume_rho2_los_view_axis %r", "+Z")
+    add_record("volume_rho2_los_side_view_axis %r", "+X")
+    add_record("volume_rho2_los_example_view_axis %r", "+Y")
+    add_record("volume_rho2_los_unit %r", "kg^2/m^5")
+    add_record("volume_rho2_los_nonempty_rays %r", int(np.count_nonzero(np.asarray(los_counts) > 0)))
+    add_record("volume_rho2_los_side_nonempty_rays %r", int(np.count_nonzero(np.asarray(los_side_counts) > 0)))
+    add_record("volume_rho2_los_example_nonempty_rays %r", int(np.count_nonzero(np.asarray(los_example_counts) > 0)))
+
+    if "te [K]" not in smart_ds:
+        log.info("Skipping coronal emission LOS products because te [K] is unavailable")
+        add_record("volume_coronal_emission_skipped %r", "te [K] unavailable")
+        log.debug("Rendering LOS rho^2 images complete in %.2f s.", perf_counter() - stage_start)
+        return
+
     response_path = DEFAULT_RESPONSE_FUNCTION_PATH
     overlay_plot_radius = float(np.hypot(LOS_EXAMPLE_SIDE_LENGTH_R, LOS_EXAMPLE_SIDE_LENGTH_R))
     _field_line_grid, _field_line_source, traced_field_lines = build_magnetic_field_lines(
@@ -1055,21 +1076,46 @@ def save_los_images(
     add_record("volume_coronal_emission_summary_npz %r", str(coronal_emission_summary_npz.relative_to(parent_dir)))
     add_record("volume_coronal_emission_radial_summary_png %r", str(coronal_emission_radial_png.relative_to(parent_dir)))
     add_record("volume_coronal_emission_unit_summary_png %r", str(coronal_emission_units_png.relative_to(parent_dir)))
-    add_record("volume_rho2_los_npz %r", str(los_npz.relative_to(parent_dir)))
-    add_record("volume_rho2_los_png %r", str(los_png.relative_to(parent_dir)))
-    add_record("volume_rho2_los_side_npz %r", str(los_side_npz.relative_to(parent_dir)))
-    add_record("volume_rho2_los_side_png %r", str(los_side_png.relative_to(parent_dir)))
-    add_record("volume_rho2_los_example_npz %r", str(los_example_npz.relative_to(parent_dir)))
-    add_record("volume_rho2_los_example_png %r", str(los_example_png.relative_to(parent_dir)))
-    add_record("volume_rho2_los_image_n %r", image_n)
-    add_record("volume_rho2_los_view_axis %r", "+Z")
-    add_record("volume_rho2_los_side_view_axis %r", "+X")
-    add_record("volume_rho2_los_example_view_axis %r", "+Y")
-    add_record("volume_rho2_los_unit %r", "kg^2/m^5")
-    add_record("volume_rho2_los_nonempty_rays %r", int(np.count_nonzero(np.asarray(los_counts) > 0)))
-    add_record("volume_rho2_los_side_nonempty_rays %r", int(np.count_nonzero(np.asarray(los_side_counts) > 0)))
-    add_record("volume_rho2_los_example_nonempty_rays %r", int(np.count_nonzero(np.asarray(los_example_counts) > 0)))
     log.debug("Rendering LOS rho^2 images complete in %.2f s.", perf_counter() - stage_start)
+
+
+def process_smart_ds(
+    smart_ds: SmartDs,
+    *,
+    path: str | Path,
+    output_dir: Path | None = None,
+    prefix: str | None = None,
+    parent_dir: Path | None = None,
+) -> None:
+    """Process one already-loaded 3D SmartDs through the volume pipeline."""
+    path = Path(path)
+    if output_dir is None:
+        output_dir = path.parent / "volume"
+    if prefix is None:
+        prefix = output_prefix_from_input_file(path.name)
+    if parent_dir is None:
+        parent_dir = path.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8), constrained_layout=True)
+    shells, shell_radii, has_energy_source = sample_shell_grid(smart_ds, DEFAULT_QUICKLOOK_RADII_R)
+
+    record_wind_mass_loss(axes[0, 0], shell_radii, shells)
+    record_wind_torque(axes[0, 1], shell_radii, shells)
+    record_open_magnetic_flux(axes[1, 0], shell_radii, shells)
+    record_energy_flux(axes[1, 1], shell_radii, shells, has_energy_source)
+
+    max_alfven_radius = record_3d_quantities(smart_ds)
+    save_field_line_surface_plots(smart_ds, output_dir, prefix, parent_dir, max_alfven_radius)
+    save_los_images(smart_ds, output_dir, prefix, parent_dir, max_alfven_radius)
+
+    stage_start = perf_counter()
+    log.info("Saving volume figure...")
+    shell_png = output_dir / f"{prefix}.shells.png"
+    fig.savefig(shell_png)
+    plt.close(fig)
+    add_record("volume_shell_png %r", str(shell_png.relative_to(parent_dir)))
+    log.debug("Saving volume figure complete in %.2f s.", perf_counter() - stage_start)
 
 
 def process_plt_file(file_path: str | Path) -> None:
@@ -1087,23 +1133,10 @@ def process_plt_file(file_path: str | Path) -> None:
     log.info("Loading volume dataset...")
     smart_ds = SmartDs.from_file(path, batsrus=True, spherical=True)
     log.debug("Loading volume dataset complete in %.2f s.", perf_counter() - stage_start)
-
-    fig, axes = plt.subplots(2, 2, figsize=(10, 8), constrained_layout=True)
-    shells, shell_radii, has_energy_source = sample_shell_grid(smart_ds, DEFAULT_QUICKLOOK_RADII_R)
-
-    record_wind_mass_loss(axes[0, 0], shell_radii, shells)
-    record_wind_torque(axes[0, 1], shell_radii, shells)
-    record_open_magnetic_flux(axes[1, 0], shell_radii, shells)
-    record_energy_flux(axes[1, 1], shell_radii, shells, has_energy_source)
-
-    max_alfven_radius = record_3d_quantities(smart_ds)
-    save_field_line_surface_plots(smart_ds, output_dir, prefix, path.parent, max_alfven_radius)
-    save_los_images(smart_ds, output_dir, prefix, path.parent, max_alfven_radius)
-
-    stage_start = perf_counter()
-    log.info("Saving volume figure...")
-    shell_png = output_dir / f"{prefix}.shells.png"
-    fig.savefig(shell_png)
-    plt.close(fig)
-    add_record("volume_shell_png %r", str(shell_png.relative_to(path.parent)))
-    log.debug("Saving volume figure complete in %.2f s.", perf_counter() - stage_start)
+    process_smart_ds(
+        smart_ds,
+        path=path,
+        output_dir=output_dir,
+        prefix=prefix,
+        parent_dir=path.parent,
+    )

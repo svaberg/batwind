@@ -4,6 +4,9 @@ import logging
 from pathlib import Path
 import shutil
 
+import numpy as np
+from batread import Dataset
+
 import batwind.pipelines.volume as volume
 from batwind.pipelines.recorder import BatwindRecordHandler
 from batwind.smart_ds import SmartDs
@@ -75,3 +78,109 @@ def test_process_plt_file_records_3d_quantities_and_writes_surface_plots(tmp_pat
     assert 0.0 <= out["open_flux_fraction"] <= 1.0
     assert 0.0 <= out["open_area_fraction"] <= 1.0
     assert 0.0 <= out["current_sheet_inclination_deg"] <= 90.0
+
+
+def test_process_smart_ds_accepts_preloaded_dataset(tmp_path, monkeypatch):
+    points = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ],
+        dtype=float,
+    )
+    corners = np.array([[0, 1, 2, 3, 4, 5, 6, 7]], dtype=int)
+    smart_ds = SmartDs(
+        Dataset(
+            points,
+            corners,
+            aux={"RBODY": "1.00"},
+            title="preloaded",
+            variables=["X [R]", "Y [R]", "Z [R]"],
+            zone="preloaded",
+        )
+    )
+    call_order: list[str] = []
+
+    monkeypatch.setattr(
+        volume,
+        "sample_shell_grid",
+        lambda _smart_ds, _radii: ({}, np.array([2.0], dtype=float), False),
+    )
+    monkeypatch.setattr(volume, "record_wind_mass_loss", lambda *args, **kwargs: call_order.append("mass"))
+    monkeypatch.setattr(volume, "record_wind_torque", lambda *args, **kwargs: call_order.append("torque"))
+    monkeypatch.setattr(volume, "record_open_magnetic_flux", lambda *args, **kwargs: call_order.append("flux"))
+    monkeypatch.setattr(volume, "record_energy_flux", lambda *args, **kwargs: call_order.append("energy"))
+    monkeypatch.setattr(volume, "record_3d_quantities", lambda _smart_ds: call_order.append("3d") or 5.0)
+    monkeypatch.setattr(volume, "save_field_line_surface_plots", lambda *args, **kwargs: call_order.append("surface"))
+    monkeypatch.setattr(volume, "save_los_images", lambda *args, **kwargs: call_order.append("los"))
+
+    path = tmp_path / "3d__var_2_n00050000.plt"
+    path.write_text("")
+    volume.process_smart_ds(smart_ds, path=path)
+
+    assert call_order == ["mass", "torque", "flux", "energy", "3d", "surface", "los"]
+    shell_png = tmp_path / "volume" / "3d_var_2_n00050000.shells.png"
+    assert shell_png.exists()
+    assert shell_png.stat().st_size > 0
+
+
+def test_save_los_images_skips_coronal_emission_when_te_is_missing(tmp_path, monkeypatch):
+    points = np.array(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [1.0, 0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0, 1.0],
+        ],
+        dtype=float,
+    )
+    corners = np.array([[0, 1, 2, 3, 4, 5, 6, 7]], dtype=int)
+    smart_ds = SmartDs(
+        Dataset(
+            points,
+            corners,
+            aux={"RBODY [m]": 1.0},
+            title="rho-only",
+            variables=["X [R]", "Y [R]", "Z [R]", "Rho [kg/m^3]"],
+            zone="rho-only",
+        )
+    )
+
+    monkeypatch.setattr(volume, "build_los_geometry", lambda _smart_ds: (None, None, (-1.0, 1.0, -1.0, 1.0, -1.0, 1.0)))
+    monkeypatch.setattr(volume, "build_los_interpolator", lambda _tree, _values: object())
+    monkeypatch.setattr(
+        volume,
+        "render_rho2_los_image",
+        lambda *_args, **_kwargs: (np.ones((2, 2), dtype=float), (-1.0, 1.0, -1.0, 1.0), np.ones((2, 2), dtype=int)),
+    )
+    monkeypatch.setattr(volume, "build_magnetic_field_lines", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("Coronal emission branch should be skipped when te [K] is missing")
+    ))
+
+    def _write_npz(npz_path, *_args, **_kwargs):
+        np.savez_compressed(npz_path, demo=np.array([1.0], dtype=float))
+
+    def _write_png(_npz_path, png_path):
+        png_path.write_bytes(b"png")
+
+    monkeypatch.setattr(volume, "save_los_colormesh_npz", _write_npz)
+    monkeypatch.setattr(volume, "plot_los_colormesh_npz", _write_png)
+    monkeypatch.setattr(volume, "save_example_los_colormesh_npz", _write_npz)
+    monkeypatch.setattr(volume, "plot_example_los_colormesh_npz", _write_png)
+
+    volume.save_los_images(smart_ds, tmp_path, "demo", tmp_path, 5.0)
+
+    assert (tmp_path / "demo.rho2_los.png").exists()
+    assert (tmp_path / "demo.rho2_los_side.png").exists()
+    assert (tmp_path / "demo.rho2_los_example.png").exists()
+    assert not (tmp_path / "demo.hard_los_example.png").exists()
