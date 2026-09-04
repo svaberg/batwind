@@ -18,6 +18,11 @@ _SEED_RADIUS_SCALE = 1.02
 _CLOSED_END_RADIUS_SCALE = 1.2
 _DEFAULT_CLOSED_RADIUS_SCALE = 1.1
 _MAGNETIC_VECTOR_NAME = "B_vec [T]"
+_OPEN_TAIL_ALIGNMENT_COS = float(np.cos(np.deg2rad(10.0)))
+_OPEN_TAIL_TURN_COS = float(np.cos(np.deg2rad(5.0)))
+_OPEN_TAIL_MIN_SEGMENTS = 4
+_OPEN_TAIL_MIN_RETAINED_POINTS = 4
+_OPEN_TAIL_START_RADIUS_SCALE = 2.0
 
 
 def build_magnetic_field_lines(
@@ -414,6 +419,8 @@ def visible_magnetic_field_lines(
         raise ValueError(f"No magnetic field lines remained inside r={open_radius:g}")
     open_mask = np.asarray(open_lines.cell_data["field_line_is_open"], dtype=bool)
     open_visible = open_lines.extract_cells(np.flatnonzero(open_mask))
+    if open_visible.n_cells > 0:
+        open_visible = _truncate_straight_open_field_line_tails(open_visible)
 
     if closed_visible.n_cells == 0:
         return open_visible
@@ -466,6 +473,127 @@ def project_field_lines_to_view_plane(
         family: (np.asarray(family_x, dtype=float), np.asarray(family_y, dtype=float))
         for family, (family_x, family_y) in projected.items()
     }
+
+
+def _split_visible_field_line_families(visible_lines: pv.PolyData) -> tuple[pv.PolyData | None, pv.PolyData | None]:
+    cell_is_open = np.asarray(visible_lines.cell_data["field_line_is_open"], dtype=bool)
+    closed_ids = np.flatnonzero(~cell_is_open)
+    open_ids = np.flatnonzero(cell_is_open)
+    closed_visible = visible_lines.extract_cells(closed_ids) if closed_ids.size else None
+    open_visible = visible_lines.extract_cells(open_ids) if open_ids.size else None
+    return closed_visible, open_visible
+
+
+def _add_field_line_family_meshes(
+    plotter: pv.Plotter,
+    *,
+    closed_visible: pv.PolyData | None,
+    open_visible: pv.PolyData | None,
+    vmax: float,
+    annotations: dict[float, str],
+) -> None:
+    if closed_visible is not None and closed_visible.n_cells > 0:
+        plotter.add_mesh(
+            closed_visible,
+            scalars="symlog B_r [arb]",
+            line_width=3.0,
+            render_lines_as_tubes=True,
+            scalar_bar_args=readable_scalar_bar_args("B_r [T]"),
+            cmap="RdBu_r",
+            clim=(-vmax, vmax),
+            annotations=annotations,
+        )
+    if open_visible is not None and open_visible.n_cells > 0:
+        plotter.add_mesh(
+            open_visible,
+            scalars="symlog B_r [arb]",
+            line_width=1.8,
+            render_lines_as_tubes=False,
+            opacity=0.7,
+            show_scalar_bar=closed_visible is None or closed_visible.n_cells == 0,
+            scalar_bar_args=readable_scalar_bar_args("B_r [T]"),
+            cmap="RdBu_r",
+            clim=(-vmax, vmax),
+            annotations=annotations,
+        )
+
+
+def _truncate_straight_open_field_line_tails(open_lines: pv.PolyData) -> pv.PolyData:
+    line_data = open_lines if isinstance(open_lines, pv.PolyData) else open_lines.extract_surface(algorithm=None)
+    points = np.asarray(line_data.points, dtype=float)
+    radii = np.linalg.norm(points, axis=1)
+    positive = radii[radii > 0.0]
+    if positive.size == 0:
+        return line_data
+    min_tail_radius = _OPEN_TAIL_START_RADIUS_SCALE * float(np.min(positive))
+
+    original_cells = np.asarray(line_data.lines, dtype=int)
+    new_cells: list[int] = []
+    i = 0
+    while i < original_cells.size:
+        n_points = int(original_cells[i])
+        point_ids = original_cells[i + 1:i + 1 + n_points]
+        trimmed_ids = _truncate_open_point_ids(points, point_ids, min_tail_radius=min_tail_radius)
+        new_cells.extend([int(trimmed_ids.size), *trimmed_ids.tolist()])
+        i += n_points + 1
+
+    trimmed = pv.PolyData(points, lines=np.asarray(new_cells, dtype=np.int64))
+    for name, values in line_data.point_data.items():
+        trimmed.point_data[name] = np.asarray(values)
+    for name, values in line_data.cell_data.items():
+        trimmed.cell_data[name] = np.asarray(values)
+    return trimmed
+
+
+def _truncate_open_point_ids(
+    points: np.ndarray,
+    point_ids: np.ndarray,
+    *,
+    min_tail_radius: float,
+) -> np.ndarray:
+    if point_ids.size <= _OPEN_TAIL_MIN_RETAINED_POINTS:
+        return point_ids
+
+    coords = np.asarray(points[point_ids], dtype=float)
+    radii = np.linalg.norm(coords, axis=1)
+    far_at_start = bool(radii[0] >= radii[-1])
+    oriented_ids = point_ids if far_at_start else point_ids[::-1]
+    oriented_coords = coords if far_at_start else coords[::-1]
+
+    segment_vectors = oriented_coords[1:] - oriented_coords[:-1]
+    segment_lengths = np.linalg.norm(segment_vectors, axis=1)
+    if np.any(segment_lengths <= 0.0):
+        return point_ids
+    tangent = segment_vectors / segment_lengths[:, None]
+    midpoints = 0.5 * (oriented_coords[1:] + oriented_coords[:-1])
+    midpoint_radii = np.linalg.norm(midpoints, axis=1)
+    if np.any(midpoint_radii <= 0.0):
+        return point_ids
+    radial_direction = midpoints / midpoint_radii[:, None]
+    radial_alignment = np.abs(np.einsum("ij,ij->i", tangent, radial_direction))
+    turn_alignment = np.ones_like(radial_alignment)
+    if tangent.shape[0] > 1:
+        turn_alignment[:-1] = np.abs(np.einsum("ij,ij->i", tangent[:-1], tangent[1:]))
+
+    tail_segments = 0
+    for radius_value, radial_value, turn_value in zip(midpoint_radii, radial_alignment, turn_alignment):
+        if radius_value < min_tail_radius:
+            break
+        if radial_value < _OPEN_TAIL_ALIGNMENT_COS:
+            break
+        if turn_value < _OPEN_TAIL_TURN_COS:
+            break
+        tail_segments += 1
+
+    if tail_segments < _OPEN_TAIL_MIN_SEGMENTS:
+        return point_ids
+
+    max_cut = int(oriented_ids.size - _OPEN_TAIL_MIN_RETAINED_POINTS)
+    cut = min(tail_segments, max_cut)
+    if cut <= 0:
+        return point_ids
+    kept_ids = oriented_ids[cut:]
+    return kept_ids if far_at_start else kept_ids[::-1]
 
 
 def plot_magnetic_field_lines(
@@ -539,6 +667,7 @@ def plot_magnetic_field_lines(
             for signed_tick in (-tick, tick):
                 transformed_tick = float(symlog_transform(np.array([signed_tick], dtype=float))[0])
                 annotations[transformed_tick] = f"{signed_tick:.0e}"
+    closed_visible, open_visible = _split_visible_field_line_families(visible_lines)
 
     plotter = pv.Plotter(off_screen=off_screen)
 
@@ -551,14 +680,11 @@ def plot_magnetic_field_lines(
         clim=(-vmax, vmax),
         annotations=annotations,
     )
-    plotter.add_mesh(
-        visible_lines,
-        scalars="symlog B_r [arb]",
-        line_width=3.0,
-        render_lines_as_tubes=True,
-        scalar_bar_args=readable_scalar_bar_args("B_r [T]"),
-        cmap="RdBu_r",
-        clim=(-vmax, vmax),
+    _add_field_line_family_meshes(
+        plotter,
+        closed_visible=closed_visible,
+        open_visible=open_visible,
+        vmax=vmax,
         annotations=annotations,
     )
 

@@ -19,6 +19,7 @@ from batwind.pyvista.field_lines import (
     closed_field_line_max_radius_map,
     field_line_max_radius_map,
     project_field_lines_to_view_plane,
+    visible_magnetic_field_lines,
 )
 from batwind.pyvista.fields import radial_component
 from test.pyvista_test_support import make_structured_smart_ds, scalar_bar_actor, scalar_mesh_actor
@@ -135,6 +136,64 @@ def test_project_field_lines_to_view_plane_separates_open_and_closed_cells():
         projected["open"][1],
         np.array([1.0, 0.0, -1.0, np.nan]),
         equal_nan=True,
+    )
+
+
+def test_visible_magnetic_field_lines_truncates_straight_open_tails_only():
+    tail_direction = np.array([2.0, 1.0, 0.0], dtype=float)
+    tail_direction /= np.linalg.norm(tail_direction)
+    open_points = np.array(
+        [
+            [1.00, 0.00, 0.00],
+            [1.10, 0.35, 0.00],
+            [1.35, 0.75, 0.00],
+            [1.80, 1.05, 0.00],
+            2.40 * tail_direction,
+            2.90 * tail_direction,
+            3.40 * tail_direction,
+            3.90 * tail_direction,
+            4.40 * tail_direction,
+            4.90 * tail_direction,
+        ],
+        dtype=float,
+    )
+    closed_points = np.array(
+        [
+            [0.00, 1.50, 0.00],
+            [0.50, 1.80, 0.00],
+            [0.90, 1.50, 0.00],
+            [0.50, 1.20, 0.00],
+            [0.00, 1.50, 0.00],
+        ],
+        dtype=float,
+    )
+    points = np.vstack((open_points, closed_points))
+    lines = pv.PolyData(
+        points,
+        lines=np.array(
+            [
+                len(open_points),
+                *range(len(open_points)),
+                len(closed_points),
+                *range(len(open_points), len(open_points) + len(closed_points)),
+            ],
+            dtype=np.int64,
+        ),
+    )
+    lines.cell_data["field_line_is_open"] = np.array([True, False], dtype=bool)
+
+    visible = visible_magnetic_field_lines(lines, plot_radius=5.0, open_line_plot_radius=5.0)
+    cell_is_open = np.asarray(visible.cell_data["field_line_is_open"], dtype=bool)
+    open_visible = visible.extract_cells(np.flatnonzero(cell_is_open))
+    closed_visible = visible.extract_cells(np.flatnonzero(~cell_is_open))
+
+    assert open_visible.n_cells == 1
+    assert closed_visible.n_cells == 1
+    assert np.linalg.norm(np.asarray(open_visible.points, dtype=float), axis=1).max() < 4.0
+    np.testing.assert_allclose(
+        np.linalg.norm(np.asarray(closed_visible.points, dtype=float), axis=1).max(),
+        np.linalg.norm(closed_points, axis=1).max(),
+        atol=1e-12,
     )
 
 
