@@ -208,6 +208,105 @@ def plot_alfven_surface(
     return plotter, surface
 
 
+def plot_alfven_surface_with_wind_plane(
+    smart_ds: SmartDs,
+    *,
+    view_direction,
+    view_up=(0.0, 0.0, 1.0),
+    view_center=(0.0, 0.0, 0.0),
+    camera_distance: float | None = None,
+    parallel_scale: float | None = None,
+    mach_level: float = 1.0,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    off_screen: bool = False,
+    screenshot: str | PathLike[str] | None = None,
+) -> tuple[pv.Plotter, pv.PolyData, pv.PolyData]:
+    """
+    Plot the wind speed in the plane of the sky behind the Alfvén surface.
+
+    The plane passes through ``view_center`` and is normal to ``view_direction``.
+    A display copy is translated behind the full three-dimensional surface along
+    the viewing direction so it remains a background without changing its scalar
+    data or projected position.
+    """
+    if (vmin is None) ^ (vmax is None):
+        raise ValueError("vmin and vmax must be provided together")
+
+    direction = np.asarray(view_direction, dtype=float)
+    direction_norm = float(np.linalg.norm(direction))
+    if not np.isfinite(direction_norm) or direction_norm == 0.0:
+        raise ValueError("view_direction must be a finite, non-zero vector")
+    direction /= direction_norm
+
+    up = np.asarray(view_up, dtype=float)
+    up -= np.dot(up, direction) * direction
+    up_norm = float(np.linalg.norm(up))
+    if not np.isfinite(up_norm) or up_norm == 0.0:
+        raise ValueError("view_up must not be parallel to view_direction")
+    up /= up_norm
+
+    center = np.asarray(view_center, dtype=float)
+    grid, surface = build_alfven_surface(smart_ds, mach_level=mach_level)
+    surface_points = np.asarray(surface.points, dtype=float)
+    surface_radius = float(np.max(np.linalg.norm(surface_points - center, axis=1)))
+    resolved_camera_distance = (
+        3.2 * surface_radius if camera_distance is None else float(camera_distance)
+    )
+    if resolved_camera_distance <= surface_radius:
+        raise ValueError("camera_distance must be greater than the Alfvén-surface radius")
+
+    wind_plane = grid.slice(normal=tuple(direction), origin=tuple(center))
+    if wind_plane.n_points == 0 or wind_plane.n_cells == 0:
+        raise ValueError("No wind-speed plane-of-sky slice was produced")
+
+    plotter = pv.Plotter(off_screen=off_screen)
+    plotter.camera.position = tuple(center - resolved_camera_distance * direction)
+    plotter.camera.focal_point = tuple(center)
+    plotter.camera.up = tuple(up)
+    plotter.enable_parallel_projection()
+    if parallel_scale is not None:
+        plotter.camera.parallel_scale = float(parallel_scale)
+    plotter.reset_camera_clipping_range()
+
+    camera_position = np.asarray(plotter.camera.position, dtype=float)
+    camera_forward = center - camera_position
+    camera_forward /= np.linalg.norm(camera_forward)
+    surface_depths = (surface_points - camera_position) @ camera_forward
+    plane_points = np.asarray(wind_plane.points, dtype=float)
+    plane_depths = (plane_points - camera_position) @ camera_forward
+    depth_margin = 0.05 * surface_radius
+    depth_shift = float(np.max(surface_depths) + depth_margin - np.mean(plane_depths))
+    display_plane = wind_plane.copy(deep=True)
+    display_plane.points = plane_points + depth_shift * camera_forward
+
+    mesh_args = {
+        "scalars": "U [m/s]",
+        "cmap": "viridis",
+    }
+    if vmin is not None and vmax is not None:
+        mesh_args["clim"] = (float(vmin), float(vmax))
+    plotter.add_mesh(
+        display_plane,
+        **mesh_args,
+        lighting=False,
+        show_scalar_bar=False,
+    )
+    plotter.add_mesh(
+        surface,
+        **mesh_args,
+        smooth_shading=True,
+        scalar_bar_args=readable_scalar_bar_args("U [m/s]"),
+    )
+    plotter.reset_camera_clipping_range()
+
+    if screenshot is not None:
+        plotter.show(screenshot=str(screenshot), auto_close=False)
+    elif not off_screen:
+        plotter.show(auto_close=False)
+    return plotter, surface, display_plane
+
+
 def plot_current_sheet_surface(
     smart_ds: SmartDs,
     *,
@@ -306,5 +405,6 @@ __all__ = [
     "build_current_sheet_surface",
     "current_sheet_orientation",
     "plot_alfven_surface",
+    "plot_alfven_surface_with_wind_plane",
     "plot_current_sheet_surface",
 ]

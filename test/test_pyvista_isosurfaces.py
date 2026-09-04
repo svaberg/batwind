@@ -15,6 +15,7 @@ from batwind.pyvista import (
     plot_current_sheet_surface,
     plot_pyvista_viewport,
 )
+from batwind.pyvista.isosurfaces import plot_alfven_surface_with_wind_plane
 from batwind.pyvista.isosurfaces import alfven_surface_radius_map
 from test.pyvista_test_support import make_structured_smart_ds, scalar_bar_actor, scalar_mesh_actor
 
@@ -86,6 +87,44 @@ def test_build_alfven_surface_on_synthetic_unit_sphere():
     assert surface.active_scalars_name == "U [m/s]"
     assert np.nanmax(np.abs(radii - 1.0)) < 0.01
     assert np.nanmax(np.abs(mach - 1.0)) < 1e-6
+
+
+def test_plot_alfven_surface_with_wind_plane_places_plane_behind_surface():
+    density_si = 1.0e-9
+    magnetic_scale_si = 1.0e-4
+    wind_speed_si = magnetic_scale_si / np.sqrt(_MU0 * density_si)
+    smart_ds = _make_mhd_smart_ds(
+        lambda x, y, z: (
+            np.full_like(x, density_si / 1e3),
+            np.full_like(x, wind_speed_si / 1e3),
+            np.zeros_like(x),
+            np.zeros_like(x),
+            x,
+            y,
+            z,
+        )
+    )
+
+    plotter, surface, wind_plane = plot_alfven_surface_with_wind_plane(
+        smart_ds,
+        view_direction=(0.0, 1.0, 0.0),
+        view_up=(0.0, 0.0, 1.0),
+        parallel_scale=1.5,
+        vmin=0.0,
+        vmax=2.0 * wind_speed_si,
+        off_screen=True,
+    )
+    try:
+        surface_depth = _camera_depths(plotter, np.asarray(surface.points, dtype=float))
+        plane_depth = _camera_depths(plotter, np.asarray(wind_plane.points, dtype=float))
+        assert wind_plane.n_points > 0
+        assert wind_plane.n_cells > 0
+        assert "U [m/s]" in wind_plane.point_data
+        assert np.min(plane_depth) > np.max(surface_depth)
+        assert plotter.camera.parallel_projection
+        assert plotter.camera.parallel_scale == pytest.approx(1.5)
+    finally:
+        plotter.close()
 
 
 def test_alfven_surface_averages_match_synthetic_projected_surface():
