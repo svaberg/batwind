@@ -1,4 +1,5 @@
 from pathlib import Path
+import weakref
 
 import griblet
 import numpy as np
@@ -103,6 +104,15 @@ def test_passthrough_raw_field():
 
     np.testing.assert_allclose(sds["Q [none]"], [0.0, 1.0, 1.0, 2.0])
     assert "Q [none]" in sds
+
+
+def test_source_graph_does_not_retain_smart_ds():
+    sds = SmartDs(make_dataset_2d())
+    reference = weakref.ref(sds)
+
+    del sds
+
+    assert reference() is None
 
 
 def test_resample_returns_new_wrapped_dataset_nearest():

@@ -256,10 +256,11 @@ class SmartDs:
 
     def _build_source_graph(self) -> griblet.Graph:
         graph = griblet.Graph()
-        for raw_name in self._dataset.variables:
+        dataset = self._dataset
+        for raw_name in dataset.variables:
             graph.add(
                 raw_name,
-                lambda raw_name=raw_name: self._dataset[raw_name],
+                lambda raw_name=raw_name, dataset=dataset: dataset[raw_name],
                 needs=[],
                 cost=0.0,
                 metadata={"description": "Dataset raw field", "loader": True},
