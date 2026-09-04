@@ -23,8 +23,8 @@ from batwind.algorithms.octree_integration import radial_emission_profile_exact_
 from batwind.analysis.shells import integrate_shell_scalar
 from batwind.analysis.shells import sample_spherical_shells_fibonacci
 from batwind.constants import DEFAULT_QUICKLOOK_RADII_R
-from batwind.physics.emission import DEFAULT_RESPONSE_FUNCTION_PATH
-from batwind.physics.emission import band_emissivity_from_response_table_si
+from batwind.physics.emission import DEFAULT_SPECTRAL_CONTRIBUTION_PATH
+from batwind.physics.emission import band_emissivity_from_spectral_contribution_si
 from batwind.physics.emission import point_unblocked_solid_angle_sr
 from batwind.pipelines.utils import annotate_iteration_axis
 from batwind.pipelines.utils import output_prefix_from_input_file
@@ -62,15 +62,15 @@ SURFACE_VIEWPORT_DPI = 180
 SURFACE_VIEWPORT_RENDER_SIZE = (1400, 1400)
 CORONAL_EMISSION_BANDS = {
     "hard": {
-        "response_components": ("Hard_line", "Hard_cont"),
+        "wavelength_limits_angstrom": (0.1, 5.0),
         "display_label": "Hard X-ray",
     },
     "rosat": {
-        "response_components": ("ROSAT_line", "ROSAT_cont"),
+        "wavelength_limits_angstrom": (5.0, 120.0),
         "display_label": "ROSAT",
     },
     "euv": {
-        "response_components": ("EUV_line", "EUV_cont"),
+        "wavelength_limits_angstrom": (120.0, 180.0),
         "display_label": "EUV",
     },
 }
@@ -922,7 +922,7 @@ def save_los_images(
         log.debug("Rendering LOS rho^2 images complete in %.2f s.", perf_counter() - stage_start)
         return
 
-    response_path = DEFAULT_RESPONSE_FUNCTION_PATH
+    spectrum_path = DEFAULT_SPECTRAL_CONTRIBUTION_PATH
     overlay_plot_radius = float(np.hypot(LOS_EXAMPLE_SIDE_LENGTH_R, LOS_EXAMPLE_SIDE_LENGTH_R))
     _field_line_grid, _field_line_source, traced_field_lines = build_magnetic_field_lines(
         smart_ds,
@@ -935,10 +935,10 @@ def save_los_images(
     )
     point_unblocked_solid_angle = point_unblocked_solid_angle_sr(smart_ds)
     raw_band_emissivities = {
-        band_name: band_emissivity_from_response_table_si(
+        band_name: band_emissivity_from_spectral_contribution_si(
             smart_ds,
-            CORONAL_EMISSION_BANDS[band_name]["response_components"],
-            response_path=response_path,
+            CORONAL_EMISSION_BANDS[band_name]["wavelength_limits_angstrom"],
+            spectrum_path=spectrum_path,
         )
         for band_name in CORONAL_EMISSION_BAND_NAMES
     }
@@ -988,7 +988,7 @@ def save_los_images(
             )
         add_record(f"volume_{band_name}_los_example_npz %r", str(band_npz.relative_to(parent_dir)))
         add_record(f"volume_{band_name}_los_example_png %r", str(band_png.relative_to(parent_dir)))
-        add_record(f"volume_{band_name}_los_example_response %r", str(response_path))
+        add_record(f"volume_{band_name}_los_example_response %r", str(spectrum_path))
 
         directional_image, directional_extent, _ = render_rho2_los_image(
             tracer,

@@ -4,18 +4,16 @@ from pathlib import Path
 from batcamp import Octree
 from batcamp import OctreeInterpolator
 from batread import Dataset
+from netCDF4 import Dataset as NetcdfDataset
 
 from batwind.physics.emission import band_emissivity_si
 from batwind.physics.emission import band_emissivity_from_spectral_contribution_si
-from batwind.physics.emission import band_emissivity_from_response_table_si
 from batwind.physics.emission import band_luminosity_si
 from batwind.physics.emission import load_spectral_contribution_table
-from batwind.physics.emission import RESPONSE_TABLE_SCALE_TO_SI
 from batwind.physics.emission import unblocked_solid_angle
 from batwind.recipes.batsrus import build_batsrus_graph
 from batwind.smart_ds import SmartDs
 
-ROSAT_COMPONENTS = ("ROSAT_line", "ROSAT_cont")
 ROSAT_WAVELENGTH_LIMITS_ANGSTROM = (5.0, 120.0)
 SYNTHETIC_DENSITY_CM3 = 1.0e10
 SYNTHETIC_TEMPERATURE_K = np.array([1.0e5, 1.0e6, 1.0e7], dtype=float)
@@ -47,56 +45,30 @@ def make_one_cell_dataset(origin_r: tuple[float, float, float], width_r: float, 
     return Dataset(points, corners, aux={}, title="one-cell", variables=variables, zone="z0")
 
 
-def write_synthetic_response_table(response_path: Path) -> None:
-    rosat_response_table_values = SYNTHETIC_ROSAT_RESPONSE_SI / RESPONSE_TABLE_SCALE_TO_SI
-    lines = [
-        "Synthetic response table\n",
-        "0 0.000000 2 1 6\n",
-        f"{SYNTHETIC_TEMPERATURE_K.size} 1\n",
-        "l10T l10ne Hard_line Hard_cont ROSAT_line ROSAT_cont EUV_line EUV_cont\n",
-    ]
-    for temperature_k, rosat_response_table_value in zip(SYNTHETIC_TEMPERATURE_K, rosat_response_table_values):
-        lines.append(
-            f"{np.log10(temperature_k):.6e} {np.log10(SYNTHETIC_DENSITY_CM3):.6e} "
-            f"0.000000e+00 0.000000e+00 "
-            f"{0.25 * rosat_response_table_value:.6e} {0.75 * rosat_response_table_value:.6e} "
-            f"0.000000e+00 0.000000e+00\n"
-        )
-    response_path.write_text("".join(lines), encoding="utf-8")
-
-
-def write_synthetic_spectral_contribution_bundle(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
-    density_grid = np.full(
-        (1, SYNTHETIC_TEMPERATURE_K.size, SYNTHETIC_WAVELENGTH_ANGSTROM.size),
-        SYNTHETIC_DENSITY_CM3,
+def write_synthetic_spectral_contribution_file(tmp_path: Path) -> Path:
+    spectral_contribution_si = np.zeros(
+        (SYNTHETIC_TEMPERATURE_K.size, SYNTHETIC_WAVELENGTH_ANGSTROM.size),
         dtype=float,
     )
-    temperature_grid = np.broadcast_to(
-        SYNTHETIC_TEMPERATURE_K[np.newaxis, :, np.newaxis],
-        density_grid.shape,
-    ).copy()
-    wavelength_grid = np.broadcast_to(
-        SYNTHETIC_WAVELENGTH_ANGSTROM[np.newaxis, np.newaxis, :],
-        density_grid.shape,
-    ).copy()
-    spectral_contribution_si = np.zeros(density_grid.shape + (5,), dtype=float)
     rosat_mask = (SYNTHETIC_WAVELENGTH_ANGSTROM >= ROSAT_WAVELENGTH_LIMITS_ANGSTROM[0]) & (
         SYNTHETIC_WAVELENGTH_ANGSTROM < ROSAT_WAVELENGTH_LIMITS_ANGSTROM[1]
     )
     spectral_density_si = SYNTHETIC_ROSAT_RESPONSE_SI[:, np.newaxis] / 40.0
-    spectral_contribution_si[0, :, :, 1][:, rosat_mask] = 0.25 * spectral_density_si
-    spectral_contribution_si[0, :, :, 2][:, rosat_mask] = 0.75 * spectral_density_si
-    spectral_contribution_raw = spectral_contribution_si / 1.0e-13
+    spectral_contribution_si[:, rosat_mask] = spectral_density_si
 
-    density_path = tmp_path / "grid-density.npy"
-    temperature_path = tmp_path / "grid-temperature.npy"
-    wavelength_path = tmp_path / "grid-wavelength.npy"
-    spectrum_path = tmp_path / "synthetic-spectrum.npy"
-    np.save(density_path, density_grid)
-    np.save(temperature_path, temperature_grid)
-    np.save(wavelength_path, wavelength_grid)
-    np.save(spectrum_path, spectral_contribution_raw)
-    return spectrum_path, density_path, temperature_path, wavelength_path
+    spectrum_path = tmp_path / "synthetic-spectrum.nc"
+    with NetcdfDataset(spectrum_path, "w") as dataset:
+        dataset.createDimension("density", 1)
+        dataset.createDimension("temperature", SYNTHETIC_TEMPERATURE_K.size)
+        dataset.createDimension("wavelength", SYNTHETIC_WAVELENGTH_ANGSTROM.size)
+        dataset.createVariable("density", "f8", ("density",))[:] = [SYNTHETIC_DENSITY_CM3]
+        dataset.createVariable("temperature", "f8", ("temperature",))[:] = SYNTHETIC_TEMPERATURE_K
+        dataset.createVariable("wavelength", "f8", ("wavelength",))[:] = SYNTHETIC_WAVELENGTH_ANGSTROM
+        for component_name, fraction in (("freefree", 0.25), ("freebound", 0.0), ("line", 0.75), ("twophoton", 0.0)):
+            dataset.createVariable(component_name, "f8", ("density", "temperature", "wavelength"))[:] = (
+                fraction * spectral_contribution_si[np.newaxis] / 1.0e-13
+            )
+    return spectrum_path
 
 
 def test_band_emissivity_si_tracks_si_units():
@@ -161,55 +133,28 @@ def test_band_luminosity_si_matches_off_star_single_cell_formula():
     np.testing.assert_allclose(luminosity_occulted, expected_occulted)
 
 
-def test_response_table_emissivities_match_direct_si_emissivities(tmp_path: Path):
-    dataset = make_one_cell_dataset((1.2, 0.0, 0.0), 0.4, variables=["X [R]", "Y [R]", "Z [R]", "te [K]", "Rho [kg/m^3]"])
-    dataset.points[:, 3] = 1.0e5
-    dataset.points[:, 4] = 2.0 * 1.67262192595e-27
-    sds = SmartDs(dataset)
-    sds.merge_computation_graph(build_batsrus_graph(tuple(dataset.variables), body_radius_m=1.0))
-    response_path = tmp_path / "synthetic-response.dat"
-    write_synthetic_response_table(response_path)
+def test_load_spectral_contribution_table_reads_netcdf(tmp_path: Path):
+    spectrum_path = write_synthetic_spectral_contribution_file(tmp_path)
+    temperature_k, wavelength_angstrom, spectral_contribution_si = load_spectral_contribution_table(spectrum_path)
 
-    response_log10_temperature = np.log10(SYNTHETIC_TEMPERATURE_K)
-    direct_si = band_emissivity_si(sds, response_log10_temperature, SYNTHETIC_ROSAT_RESPONSE_SI)
-    from_response_table = band_emissivity_from_response_table_si(sds, ROSAT_COMPONENTS, response_path=response_path)
-
-    np.testing.assert_allclose(from_response_table, direct_si)
-
-
-def test_load_spectral_contribution_table_reads_one_density_bundle(tmp_path: Path):
-    spectrum_path, density_path, temperature_path, wavelength_path = write_synthetic_spectral_contribution_bundle(tmp_path)
-    density_m3, temperature_k, wavelength_angstrom, spectral_contribution_si = load_spectral_contribution_table(
-        spectrum_path=spectrum_path,
-        density_path=density_path,
-        temperature_path=temperature_path,
-        wavelength_path=wavelength_path,
-    )
-
-    np.testing.assert_allclose(density_m3, SYNTHETIC_DENSITY_CM3 * 1.0e6)
     np.testing.assert_allclose(temperature_k, SYNTHETIC_TEMPERATURE_K)
     np.testing.assert_allclose(wavelength_angstrom, SYNTHETIC_WAVELENGTH_ANGSTROM)
-    assert spectral_contribution_si.shape == (SYNTHETIC_TEMPERATURE_K.size, SYNTHETIC_WAVELENGTH_ANGSTROM.size, 5)
+    assert spectral_contribution_si.shape == (SYNTHETIC_TEMPERATURE_K.size, SYNTHETIC_WAVELENGTH_ANGSTROM.size)
 
 
-def test_spectral_contribution_and_response_table_emissivities_are_consistent(tmp_path: Path):
+def test_spectral_contribution_emissivity_matches_direct_si_emissivity(tmp_path: Path):
     dataset = make_one_cell_dataset((1.2, 0.0, 0.0), 0.4, variables=["X [R]", "Y [R]", "Z [R]", "te [K]", "Rho [kg/m^3]"])
     dataset.points[:, 3] = 1.0e6
     dataset.points[:, 4] = 2.0 * 1.67262192595e-27
     sds = SmartDs(dataset)
     sds.merge_computation_graph(build_batsrus_graph(tuple(dataset.variables), body_radius_m=1.0))
-    response_path = tmp_path / "synthetic-response.dat"
-    write_synthetic_response_table(response_path)
-    spectrum_path, density_path, temperature_path, wavelength_path = write_synthetic_spectral_contribution_bundle(tmp_path)
+    spectrum_path = write_synthetic_spectral_contribution_file(tmp_path)
 
-    from_response_table = band_emissivity_from_response_table_si(sds, ROSAT_COMPONENTS, response_path=response_path)
     from_spectral_contribution = band_emissivity_from_spectral_contribution_si(
         sds,
         ROSAT_WAVELENGTH_LIMITS_ANGSTROM,
         spectrum_path=spectrum_path,
-        density_path=density_path,
-        temperature_path=temperature_path,
-        wavelength_path=wavelength_path,
     )
+    direct_si = band_emissivity_si(sds, np.log10(SYNTHETIC_TEMPERATURE_K), SYNTHETIC_ROSAT_RESPONSE_SI)
 
-    np.testing.assert_allclose(from_spectral_contribution, from_response_table)
+    np.testing.assert_allclose(from_spectral_contribution, direct_si)
