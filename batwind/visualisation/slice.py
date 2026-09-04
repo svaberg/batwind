@@ -2,7 +2,9 @@ import logging
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 
+from batwind.utils import auto_coords
 from batwind.utils import triangles
 
 log = logging.getLogger(__name__)
@@ -20,8 +22,10 @@ def plot_xz_slice_tripcolor_with_marginals(
     log.debug("plot_xz_slice_tripcolor_with_marginals var=%s bins=(%d,%d)", var, bins_x, bins_z)
     if tripcolor_kwargs is None:
         tripcolor_kwargs = {"shading": "flat"}
+    norm = tripcolor_kwargs.get("norm")
 
-    tris = triangles(ds)  # Triangulation in the XZ plane
+    u_name, v_name = auto_coords(ds)
+    tris = triangles(ds, u_name, v_name)
 
     w = np.asarray(ds[var]).ravel()
 
@@ -51,8 +55,8 @@ def plot_xz_slice_tripcolor_with_marginals(
     ax_bottom = fig.add_subplot(gs[1, 1], sharex=ax_main)
 
     img = ax_main.tripcolor(tris_m, w[m] if not m.all() else w, **tripcolor_kwargs)
-    ax_main.set_xlabel("X [R]")
-    ax_main.set_ylabel("Z [R]")
+    ax_main.set_xlabel(u_name)
+    ax_main.set_ylabel(v_name)
     ax_main.set_title(var)
 
     # binned means vs x and z
@@ -79,11 +83,11 @@ def plot_xz_slice_tripcolor_with_marginals(
 
     ax_bottom.plot(x_cent, mean_x)
     ax_bottom.set_ylabel("mean")
-    ax_bottom.set_xlabel("X [R]")
+    ax_bottom.set_xlabel(u_name)
 
     ax_left.plot(mean_z, z_cent)
     ax_left.set_xlabel("mean")
-    ax_left.set_ylabel("Z [R]")
+    ax_left.set_ylabel(v_name)
     ax_left.invert_xaxis()
     plt.setp(ax_left.get_yticklabels(), visible=False)
     ax_left.tick_params(axis="y", length=0)
@@ -108,8 +112,10 @@ def plot_xz_slice_tripcolor_with_cross_quantiles(
     log.debug("plot_xz_slice_tripcolor_with_cross_quantiles var=%s qlevels=%s", var, qlevels)
     if tripcolor_kwargs is None:
         tripcolor_kwargs = {"shading": "flat"}
+    norm = tripcolor_kwargs.get("norm")
 
-    tris = triangles(ds)  # Triangulation in XZ
+    u_name, v_name = auto_coords(ds)
+    tris = triangles(ds, u_name, v_name)
     x = np.asarray(tris.x).ravel()
     z = np.asarray(tris.y).ravel()
     w_full = np.asarray(ds[var]).ravel()
@@ -178,11 +184,11 @@ def plot_xz_slice_tripcolor_with_cross_quantiles(
 
     # main: use original tris + original values (don’t remap triangles here)
     img = ax_main.tripcolor(tris, w_full, **tripcolor_kwargs)
-    ax_main.set_xlabel("X [R]")
-    ax_main.set_ylabel("Z [R]")
+    ax_main.set_xlabel(u_name)
+    ax_main.set_ylabel(v_name)
     ax_main.set_title(var)
 
-    # bottom marginal: z≈0 cut, bins in x using your edge rule
+    # bottom marginal: v≈0 cut, bins in u using your edge rule
     sel_z0 = _select_near_zero(zf, cut_frac)
     xb, wb = xf[sel_z0], wf[sel_z0]
     x_edges = _edges_midway_drophalf(xb, min_per_bin)
@@ -190,10 +196,12 @@ def plot_xz_slice_tripcolor_with_cross_quantiles(
         x_cent, yqs = _binned_quantiles(xb, wb, x_edges, qlevels)
         for yq in yqs:
             ax_bottom.plot(x_cent, yq)
-    ax_bottom.set_xlabel("X [R]")
+    ax_bottom.set_xlabel(u_name)
     ax_bottom.set_ylabel("quantiles")
+    if isinstance(norm, LogNorm):
+        ax_bottom.set_yscale("log")
 
-    # left marginal: x≈0 cut, bins in z using your edge rule
+    # left marginal: u≈0 cut, bins in v using your edge rule
     sel_x0 = _select_near_zero(xf, cut_frac)
     zl, wl = zf[sel_x0], wf[sel_x0]
     z_edges = _edges_midway_drophalf(zl, min_per_bin)
@@ -202,7 +210,9 @@ def plot_xz_slice_tripcolor_with_cross_quantiles(
         for xq in xqs:
             ax_left.plot(xq, z_cent)
     ax_left.set_xlabel("quantiles")
-    ax_left.set_ylabel("Z [R]")
+    ax_left.set_ylabel(v_name)
+    if isinstance(norm, LogNorm):
+        ax_left.set_xscale("log")
     ax_left.invert_xaxis()
     plt.setp(ax_left.get_yticklabels(), visible=False)
     ax_left.tick_params(axis="y", length=0)
@@ -228,7 +238,8 @@ def plot_xz_slice_with_marginal_points(
     if scatter_kwargs is None:
         scatter_kwargs = dict(s=2, alpha=0.3)
 
-    tris = triangles(ds)  # Triangulation in XZ
+    u_name, v_name = auto_coords(ds)
+    tris = triangles(ds, u_name, v_name)
     x = np.asarray(tris.x).ravel()
     z = np.asarray(tris.y).ravel()
     w = np.asarray(ds[var]).ravel()
@@ -246,17 +257,17 @@ def plot_xz_slice_with_marginal_points(
     ax_bottom = fig.add_subplot(gs[1, 1], sharex=ax_main)
 
     img = ax_main.tripcolor(tris, ds[var], **tripcolor_kwargs)
-    ax_main.set_xlabel("X [R]")
-    ax_main.set_ylabel("Z [R]")
+    ax_main.set_xlabel(u_name)
+    ax_main.set_ylabel(v_name)
     ax_main.set_title(var)
 
     ax_bottom.scatter(x, w, **scatter_kwargs)
-    ax_bottom.set_xlabel("X [R]")
+    ax_bottom.set_xlabel(u_name)
     ax_bottom.set_ylabel(var)
 
     ax_left.scatter(w, z, **scatter_kwargs)
     ax_left.set_xlabel(var)
-    ax_left.set_ylabel("Z [R]")
+    ax_left.set_ylabel(v_name)
     ax_left.invert_xaxis()
     plt.setp(ax_left.get_yticklabels(), visible=False)
     ax_left.tick_params(axis="y", length=0)
@@ -279,7 +290,8 @@ def plot_xz_slice_tripcolor_with_marginal_quantiles_by_unique_coords(
     if tripcolor_kwargs is None:
         tripcolor_kwargs = {"shading": "flat"}
 
-    tris = triangles(ds)  # Triangulation in XZ
+    u_name, v_name = auto_coords(ds)
+    tris = triangles(ds, u_name, v_name)
     x = np.asarray(tris.x).ravel()
     z = np.asarray(tris.y).ravel()
     w = np.asarray(ds[var]).ravel()
@@ -314,19 +326,19 @@ def plot_xz_slice_tripcolor_with_marginal_quantiles_by_unique_coords(
     ax_bottom = fig.add_subplot(gs[1, 1], sharex=ax_main)
 
     img = ax_main.tripcolor(tris, ds[var], **tripcolor_kwargs)
-    ax_main.set_xlabel("X [R]")
-    ax_main.set_ylabel("Z [R]")
+    ax_main.set_xlabel(u_name)
+    ax_main.set_ylabel(v_name)
     ax_main.set_title(var)
 
     for k in range(len(qlevels)):
         ax_bottom.plot(x_u, x_q[k])
-    ax_bottom.set_xlabel("X [R]")
+    ax_bottom.set_xlabel(u_name)
     ax_bottom.set_ylabel(var)
 
     for k in range(len(qlevels)):
         ax_left.plot(z_q[k], z_u)
     ax_left.set_xlabel(var)
-    ax_left.set_ylabel("Z [R]")
+    ax_left.set_ylabel(v_name)
     ax_left.invert_xaxis()
     plt.setp(ax_left.get_yticklabels(), visible=False)
     ax_left.tick_params(axis="y", length=0)

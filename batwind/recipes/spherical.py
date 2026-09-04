@@ -46,6 +46,18 @@ def cartesian_to_spherical_angles(x, y, z):
     return r, polar, azimuth
 
 
+def spherical_radius_lat_lon_to_cartesian(radius, latitude_deg, longitude_deg):
+    """Convert spherical radius + latitude/longitude in degrees to Cartesian coordinates."""
+    radius = np.asarray(radius, dtype=float)
+    latitude_rad = np.deg2rad(np.asarray(latitude_deg, dtype=float))
+    longitude_rad = np.deg2rad(np.asarray(longitude_deg, dtype=float))
+    cos_lat = np.cos(latitude_rad)
+    x = radius * cos_lat * np.cos(longitude_rad)
+    y = radius * cos_lat * np.sin(longitude_rad)
+    z = radius * np.sin(latitude_rad)
+    return x, y, z
+
+
 def radial_component(vx, vy, vz, x, y, z):
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -144,6 +156,41 @@ def build_spherical_graph(
         needs=deps,
         cost=0.2,
         metadata={"description": "Cartesian->spherical azimuth"},
+    )
+    graph.add(
+        "Lat [deg]",
+        lambda polar: np.rad2deg((0.5 * np.pi) - np.asarray(polar, dtype=float)),
+        needs=["polar [rad]"],
+        cost=0.05,
+        metadata={"description": "Spherical colatitude -> latitude"},
+    )
+    graph.add(
+        "Lon [deg]",
+        lambda azimuth: np.rad2deg(np.asarray(azimuth, dtype=float)),
+        needs=["azimuth [rad]"],
+        cost=0.05,
+        metadata={"description": "Spherical azimuth -> longitude"},
+    )
+    graph.add(
+        x_name,
+        lambda r, lon, lat: spherical_radius_lat_lon_to_cartesian(r, lat, lon)[0],
+        needs=[r_name, "Lon [deg]", "Lat [deg]"],
+        cost=0.2,
+        metadata={"description": "Spherical radius/longitude/latitude -> Cartesian x"},
+    )
+    graph.add(
+        y_name,
+        lambda r, lon, lat: spherical_radius_lat_lon_to_cartesian(r, lat, lon)[1],
+        needs=[r_name, "Lon [deg]", "Lat [deg]"],
+        cost=0.2,
+        metadata={"description": "Spherical radius/longitude/latitude -> Cartesian y"},
+    )
+    graph.add(
+        z_name,
+        lambda r, lon, lat: spherical_radius_lat_lon_to_cartesian(r, lat, lon)[2],
+        needs=[r_name, "Lon [deg]", "Lat [deg]"],
+        cost=0.2,
+        metadata={"description": "Spherical radius/longitude/latitude -> Cartesian z"},
     )
     pattern = re.compile(r"^(?P<prefix>.+)_(?P<comp>[xyz]) \[(?P<unit>.+)\]$")
     by_prefix: dict[tuple[str, str], set[str]] = {}

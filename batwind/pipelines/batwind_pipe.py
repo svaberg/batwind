@@ -27,6 +27,7 @@ from batwind.pipelines.recorder import relative_file_key
 from batwind.pipelines.recorder import save_state
 from batwind.pipelines.recorder import sha256_file
 from batwind.pipelines.recorder import state_file_path
+from batwind.pipelines.utils import output_prefix_from_input_file
 
 log = logging.getLogger(__name__)
 PIPELINE_LOG_FORMAT = "[%(levelname)s] %(pipeline_source)s %(message)s"
@@ -233,6 +234,36 @@ def stale_processed_reason(
     return None
 
 
+def missing_recorded_output_path(stale_reason: str | None) -> str | None:
+    """Return the missing recorded output path encoded in one stale-reason string."""
+    prefix = "missing recorded output "
+    if not isinstance(stale_reason, str) or not stale_reason.startswith(prefix):
+        return None
+    return stale_reason[len(prefix):]
+
+
+def migrated_shell_output_reason(file_path: Path, file_results: object) -> str | None:
+    """Return one stale reason when an old unit-radius shell entry lacks the magnetic plot."""
+    if not isinstance(file_results, dict):
+        return None
+    if "shell_magnetic_components_png" in file_results:
+        return None
+    radius_payload = file_results.get("shell_radius_R")
+    if not isinstance(radius_payload, dict):
+        return None
+    radius_values = radius_payload.get("value")
+    if not isinstance(radius_values, list) or len(radius_values) != 1:
+        return None
+    try:
+        radius_r = float(radius_values[0])
+    except (TypeError, ValueError):
+        return None
+    if abs(radius_r - 1.0) > 1.0e-10:
+        return None
+    prefix = output_prefix_from_input_file(file_path.name)
+    return f"missing recorded output shell/{prefix}.magnetic_components.png"
+
+
 def pipeline_name_for_file(file_path: str | Path) -> str | None:
     """
     Infer built-in pipeline from the input filename prefix.
@@ -415,13 +446,22 @@ def run_batwind_pipe(
             known_computed_by_state[state_key].get(file_key),
             tracking_root=tracking_root,
         )
+        if stale_reason is None and state_pipeline_name == "shell":
+            stale_reason = migrated_shell_output_reason(
+                file_path,
+                known_computed_by_state[state_key].get(file_key),
+            )
 
         if noclobber and file_key in processed_keys and stale_reason is None:
             results.skipped_files.append(file_path)
             log.debug("batwind_pipe.skip_processed | file=%s", file_path.name)
             continue
         if file_key in processed_keys:
-            log.info("Reprocessing %s (%s)...", display_file_key, stale_reason)
+            missing_output = missing_recorded_output_path(stale_reason)
+            if missing_output is not None:
+                log.info("Regenerating missing output for %s (%s)...", display_file_key, missing_output)
+            else:
+                log.info("Reprocessing %s (%s)...", display_file_key, stale_reason)
         else:
             log.info("Processing %s...", display_file_key)
 

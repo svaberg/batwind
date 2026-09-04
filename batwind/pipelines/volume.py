@@ -26,6 +26,7 @@ from batwind.constants import DEFAULT_QUICKLOOK_RADII_R
 from batwind.physics.emission import DEFAULT_RESPONSE_FUNCTION_PATH
 from batwind.physics.emission import band_emissivity_from_response_table_si
 from batwind.physics.emission import point_unblocked_solid_angle_sr
+from batwind.pipelines.utils import annotate_iteration_axis
 from batwind.pipelines.utils import output_prefix_from_input_file
 from batwind.pyvista.field_lines import (
     build_closed_field_line_max_radius_surface,
@@ -172,6 +173,7 @@ def plot_coronal_emission_radial_summary(
     axes[0].grid(True, alpha=0.3)
     axes[1].grid(True, alpha=0.3)
     axes[0].legend(fontsize=8)
+    annotate_iteration_axis(axes[0], radial_png_path)
     fig.savefig(radial_png_path)
     plt.close(fig)
 
@@ -216,7 +218,8 @@ def plot_coronal_emission_unit_summary(
                 ),
             ]
         )
-    ax.text(0.02, 0.98, "\n".join(lines), va="top", ha="left", family="monospace", fontsize=10)
+    annotate_iteration_axis(ax, summary_png_path)
+    ax.text(0.02, 0.92, "\n".join(lines), va="top", ha="left", family="monospace", fontsize=10)
     fig.savefig(summary_png_path)
     plt.close(fig)
 
@@ -457,6 +460,7 @@ def plot_los_colormesh_npz(npz_path: Path, png_path: Path) -> None:
         ax.yaxis.set_minor_locator(ticker.MultipleLocator(0.2))
     ax.grid(False)
     fig.colorbar(mesh, ax=ax, label=colorbar_label)
+    annotate_iteration_axis(ax, png_path)
     fig.savefig(png_path)
     plt.close(fig)
 
@@ -535,6 +539,7 @@ def plot_example_los_colormesh_npz(npz_path: Path, png_path: Path) -> None:
     mesh = draw_example_los_colormesh(ax, example_data)
     colorbar = fig.colorbar(mesh, ax=ax, orientation="horizontal", pad=0.02, fraction=0.06, location="top")
     colorbar.set_label(str(example_data["colorbar_label"]))
+    annotate_iteration_axis(ax, png_path)
     fig.savefig(png_path)
     plt.close(fig)
 
@@ -557,6 +562,7 @@ def plot_example_los_colormesh_field_lines_npz(
     ax.set_title(title)
     colorbar = fig.colorbar(mesh, ax=ax, orientation="horizontal", pad=0.02, fraction=0.06, location="top")
     colorbar.set_label(str(example_data["colorbar_label"]))
+    annotate_iteration_axis(ax, png_path)
     fig.savefig(png_path)
     plt.close(fig)
 
@@ -807,6 +813,7 @@ def save_field_line_surface_plots(
             surface_ax.grid(True, color="0.9", linewidth=0.6)
             surface_ax.axhline(0.0, color="0.82", linewidth=0.8)
             surface_ax.axvline(0.0, color="0.82", linewidth=0.8)
+            annotate_iteration_axis(surface_ax, output_png)
             surface_fig.savefig(output_png, dpi=SURFACE_VIEWPORT_DPI)
             add_record(record_name + " %r", str(output_png.relative_to(parent_dir)))
         finally:
@@ -1112,6 +1119,7 @@ def process_smart_ds(
     stage_start = perf_counter()
     log.info("Saving volume figure...")
     shell_png = output_dir / f"{prefix}.shells.png"
+    annotate_iteration_axis(axes[0, 0], path)
     fig.savefig(shell_png)
     plt.close(fig)
     add_record("volume_shell_png %r", str(shell_png.relative_to(parent_dir)))

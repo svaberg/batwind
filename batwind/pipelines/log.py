@@ -10,9 +10,6 @@ import re
 import matplotlib.pyplot as plt
 import numpy as np
 
-from batwind.param_in import ParamIn
-from batwind.param_in import StarParams
-
 log = logging.getLogger(__name__)
 add_record = logging.getLogger(f"recorder.{__name__}").debug
 
@@ -41,6 +38,7 @@ TRACKED_SCALAR_NAMES = {
     "ZdiRampIterStart",
     "ZdiRampIterStop",
 }
+SESSION_ABSOLUTE_ITERATION_SCALARS = {"MaxIteration", "ZdiRampIterStart", "ZdiRampIterStop"}
 FLUX_DISPLAY_NAMES = {
     "rho": "Mass Flux",
     "jx": "Angular Momentum Flux (x)",
@@ -77,16 +75,6 @@ def find_run_root(directory: Path) -> Path | None:
     return None
 
 
-def star_params_for_run_root(run_root: Path | None) -> StarParams | None:
-    """Load star parameters from one run root PARAM.in, if present."""
-    if run_root is None:
-        return None
-    param_path = run_root / "PARAM.in"
-    if not param_path.exists():
-        return None
-    return StarParams.from_param_in(ParamIn.from_file(param_path))
-
-
 def load_log_file(path: Path) -> tuple[str, list[str], np.ndarray]:
     """Load one BATSRUS log file title, columns, and numeric data."""
     with path.open() as handle:
@@ -98,6 +86,131 @@ def load_log_file(path: Path) -> tuple[str, list[str], np.ndarray]:
     if data.shape[1] != len(columns):
         raise ValueError(f"{path.name}: expected {len(columns)} columns, got {data.shape[1]}")
     return title, columns, data
+
+
+def log_file_iteration(path: Path) -> int:
+    """Return the filename-encoded start iteration for one BATSRUS log file."""
+    match = LOG_FILE_PATTERN.fullmatch(path.name)
+    if match is None:
+        raise ValueError(f"Unsupported log filename: {path.name}")
+    return int(match.group(1))
+
+
+def representative_iteration_step(iteration: np.ndarray) -> float:
+    """Return one representative positive iteration spacing for a log series."""
+    diffs = np.diff(np.asarray(iteration, dtype=float))
+    positive = diffs[diffs > 0.0]
+    if positive.size == 0:
+        return 0.0
+    return float(np.median(positive))
+
+
+def log_segments_are_contiguous(left: np.ndarray, right: np.ndarray) -> bool:
+    """Return whether two log segments touch or overlap in iteration space."""
+    left_iteration = np.asarray(left[:, 0], dtype=float)
+    right_iteration = np.asarray(right[:, 0], dtype=float)
+    gap_allowance = max(representative_iteration_step(left_iteration), representative_iteration_step(right_iteration), 0.0)
+    return float(right_iteration[0]) <= float(left_iteration[-1]) + gap_allowance
+
+
+def sibling_log_block(path: Path) -> list[tuple[Path, str, list[str], np.ndarray]]:
+    """Return the contiguous sibling log block containing one input log file."""
+    sibling_paths = sorted(path.parent.glob("log_n*.log"), key=log_file_iteration)
+    segments = [(sibling_path, *load_log_file(sibling_path)) for sibling_path in sibling_paths]
+    current_index = next(index for index, (segment_path, *_rest) in enumerate(segments) if segment_path == path)
+
+    start = current_index
+    while start > 0:
+        left_path, _left_title, left_columns, left_data = segments[start - 1]
+        right_path, _right_title, right_columns, right_data = segments[start]
+        del left_path, right_path
+        if left_columns != right_columns:
+            break
+        if not log_segments_are_contiguous(left_data, right_data):
+            break
+        start -= 1
+
+    stop = current_index + 1
+    while stop < len(segments):
+        left_path, _left_title, left_columns, left_data = segments[stop - 1]
+        right_path, _right_title, right_columns, right_data = segments[stop]
+        del left_path, right_path
+        if left_columns != right_columns:
+            break
+        if not log_segments_are_contiguous(left_data, right_data):
+            break
+        stop += 1
+
+    return segments[start:stop]
+
+
+def merge_log_block_data(block: list[tuple[Path, str, list[str], np.ndarray]]) -> np.ndarray:
+    """Merge one contiguous log block, preferring later segments on overlap."""
+    merged = np.array(block[0][3], copy=True)
+    for _path, _title, _columns, data in block[1:]:
+        merged = merged[np.asarray(merged[:, 0], dtype=float) < float(data[0, 0])]
+        merged = np.vstack((merged, data))
+    return merged
+
+
+def iteration_is_strictly_monotonic(data: np.ndarray) -> bool:
+    """Return whether one merged log table has strictly increasing iteration values."""
+    iteration = np.asarray(data[:, 0], dtype=float)
+    return bool(np.all(np.diff(iteration) > 0.0))
+
+
+def merged_log_stem(block: list[tuple[Path, str, list[str], np.ndarray]]) -> str:
+    """Return one output stem for merged contiguous log plots."""
+    return f"{block[0][0].stem}__to__{block[-1][0].stem}.merged"
+
+
+def write_merged_block_plots(path: Path) -> tuple[Path, Path | None] | None:
+    """Write merged plots for the contiguous sibling block containing one log file."""
+    block = sibling_log_block(path)
+    if len(block) < 2:
+        return None
+
+    output_dir = path.parent / "log"
+    merged_data = merge_log_block_data(block)
+    if not iteration_is_strictly_monotonic(merged_data):
+        return None
+    first_path, title, columns, _first_data = block[0]
+    last_path, _last_title, _last_columns, _last_data = block[-1]
+    sessions = session_infos(find_run_root(path.parent), int(merged_data[0, 0]))
+    log.info(
+        "merged contiguous log block %s..%s (%d files)",
+        first_path.name,
+        last_path.name,
+        len(block),
+    )
+
+    segment_label = (
+        f"merged contiguous block it={int(merged_data[0, 0])}-{int(merged_data[-1, 0])}"
+        f" from {len(block)} files"
+    )
+    log_name = f"{first_path.name} .. {last_path.name}"
+    stem = merged_log_stem(block)
+    all_columns_path = plot_all_columns(
+        output_dir=output_dir,
+        stem=stem,
+        log_name=log_name,
+        title=title,
+        columns=columns,
+        data=merged_data,
+        segment_label=segment_label,
+        sessions=sessions,
+    )
+    flux_summary_path = plot_flux_summary(
+        output_dir=output_dir,
+        stem=stem,
+        log_name=log_name,
+        title=title,
+        columns=columns,
+        data=merged_data,
+        segment_label=segment_label,
+        sessions=sessions,
+    )
+    return all_columns_path, flux_summary_path
 
 
 def padded_limits(values: np.ndarray) -> tuple[float, float]:
@@ -204,9 +317,22 @@ def parse_session_settings(lines: list[str]) -> tuple[dict[str, bool], dict[str,
     return bools, scalars
 
 
+def normalize_active_scalars(local_scalars: dict[str, str], *, session_start: int) -> dict[str, str]:
+    """Normalize session-relative iteration scalars to absolute iteration text."""
+    normalized = dict(local_scalars)
+    for name in SESSION_ABSOLUTE_ITERATION_SCALARS:
+        value = normalized.get(name)
+        if value is None:
+            continue
+        normalized[name] = str(resolve_session_iteration(value, session_start=session_start))
+    return normalized
+
+
 def summarize_active_session(
     active_bools: dict[str, bool],
     active_scalars: dict[str, str],
+    *,
+    session_start: int,
 ) -> str:
     """Build one compact session-state summary for plot labels."""
     amr = bool_token(active_bools.get("DoAmr", False))
@@ -222,7 +348,10 @@ def summarize_active_session(
     ramp_start = active_scalars.get("ZdiRampIterStart")
     ramp_stop = active_scalars.get("ZdiRampIterStop")
     if active_bools.get("UseZdiBoundary", False) and ramp_start is not None and ramp_stop is not None:
-        parts.append(f"Ramp={ramp_start}-{ramp_stop}")
+        ramp_start_it = int(float(ramp_start))
+        ramp_stop_it = int(float(ramp_stop))
+        if ramp_stop_it > max(ramp_start_it, session_start):
+            parts.append(f"Ramp={ramp_start_it}-{ramp_stop_it}")
     return "; ".join(parts)
 
 
@@ -280,7 +409,7 @@ def session_infos(run_root: Path | None, iteration_offset: int) -> list[SessionI
             label = name.replace("session ", "s") + suffix
         local_bools, local_scalars = parse_session_settings(lines)
         cumulative_bools.update(local_bools)
-        cumulative_scalars.update(local_scalars)
+        cumulative_scalars.update(normalize_active_scalars(local_scalars, session_start=iteration_offset + start_local))
         infos.append(
             SessionInfo(
                 label=label,
@@ -290,7 +419,11 @@ def session_infos(run_root: Path | None, iteration_offset: int) -> list[SessionI
                 local_scalars=local_scalars,
                 active_bools=dict(cumulative_bools),
                 active_scalars=dict(cumulative_scalars),
-                summary=summarize_active_session(cumulative_bools, cumulative_scalars),
+                summary=summarize_active_session(
+                    cumulative_bools,
+                    cumulative_scalars,
+                    session_start=iteration_offset + start_local,
+                ),
             )
         )
     return infos
@@ -345,8 +478,14 @@ def zdi_ramp_ranges(sessions: list[SessionInfo]) -> list[tuple[int, int, str]]:
         ramp_stop_text = info.active_scalars.get("ZdiRampIterStop")
         if ramp_start_text is None or ramp_stop_text is None:
             continue
-        ramp_start = resolve_session_iteration(ramp_start_text, session_start=info.start)
-        ramp_stop = resolve_session_iteration(ramp_stop_text, session_start=info.start)
+        if "ZdiRampIterStart" in info.local_scalars:
+            ramp_start = resolve_session_iteration(info.local_scalars["ZdiRampIterStart"], session_start=info.start)
+        else:
+            ramp_start = int(float(ramp_start_text))
+        if "ZdiRampIterStop" in info.local_scalars:
+            ramp_stop = resolve_session_iteration(info.local_scalars["ZdiRampIterStop"], session_start=info.start)
+        else:
+            ramp_stop = int(float(ramp_stop_text))
         if ramp_stop <= ramp_start:
             continue
         ramp_type = info.active_scalars.get("TypeZdiRamp", "ramp")
@@ -548,26 +687,12 @@ def corrected_panel_series(
     members: list[tuple[str, int]],
     member_lookup: dict[tuple[str, str], list[tuple[str, int]]],
     data: np.ndarray,
-    star_params: StarParams | None,
 ) -> tuple[list[tuple[str, np.ndarray]], str]:
     """Return one plotted series group."""
+    del member_lookup
     out = [(radius_label, np.array(data[:, column_index], copy=True)) for radius_label, column_index in members]
     title = flux_panel_title(base_name, variant_name)
-    if base_name != "jz" or variant_name != "total" or star_params is None:
-        return out, title
-
-    mass_members = member_lookup.get(("rho", "total"))
-    if mass_members is None or len(mass_members) != len(members):
-        return out, title
-    if [label for label, _ in mass_members] != [label for label, _ in members]:
-        return out, title
-
-    radii_m = star_params.radius * np.array([float(label) for label, _ in members], dtype=float)
-    mass_flux = np.column_stack([data[:, column_index] for _, column_index in mass_members])
-    angular_flux = np.column_stack([data[:, column_index] for _, column_index in members])
-    corrected = angular_flux + star_params.rotation_rate * mass_flux * radii_m[None, :] ** 2
-    corrected_out = [(radius_label, corrected[:, i]) for i, (radius_label, _) in enumerate(members)]
-    return corrected_out, f"{title} (inertial)"
+    return out, title
 
 
 def plot_flux_summary(
@@ -580,7 +705,6 @@ def plot_flux_summary(
     data: np.ndarray,
     segment_label: str,
     sessions: list[SessionInfo],
-    star_params: StarParams | None,
 ) -> Path | None:
     """Plot stacked summaries of rho and jz shell flux logs, if present."""
     all_specs = axis_specs(columns)
@@ -609,7 +733,6 @@ def plot_flux_summary(
             members=members,
             member_lookup=member_lookup,
             data=data,
-            star_params=star_params,
         )
         series_values: list[np.ndarray] = []
         for radius_label, values in plotted_members:
@@ -653,7 +776,6 @@ def process_log_file(file_path: str | Path) -> None:
         else "fresh segment starting at it=0"
     )
     run_root = find_run_root(path.parent)
-    star_params = star_params_for_run_root(run_root)
     sessions = session_infos(run_root, first_iteration)
     stem = path.stem
 
@@ -678,10 +800,16 @@ def process_log_file(file_path: str | Path) -> None:
         data=data,
         segment_label=segment_label,
         sessions=sessions,
-        star_params=star_params,
     )
     if flux_summary_path is not None:
         add_record("log_rho_jz_png %r", str(flux_summary_path.relative_to(path.parent)))
+
+    merged_paths = write_merged_block_plots(path)
+    if merged_paths is not None:
+        merged_all_columns_path, merged_flux_summary_path = merged_paths
+        add_record("log_all_columns_merged_png %r", str(merged_all_columns_path.relative_to(path.parent)))
+        if merged_flux_summary_path is not None:
+            add_record("log_rho_jz_merged_png %r", str(merged_flux_summary_path.relative_to(path.parent)))
 
     report_path = write_session_report(
         output_dir,

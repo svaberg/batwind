@@ -176,6 +176,8 @@ def test_spherical_graph_computes_geometry_and_vector_components():
     r = sds["R [R]"]
     polar = sds["polar [rad]"]
     azimuth = sds["azimuth [rad]"]
+    lat = sds["Lat [deg]"]
+    lon = sds["Lon [deg]"]
     b_r = sds["B_r [T]"]
     b_p = sds["B_p [T]"]
     b_a = sds["B_a [T]"]
@@ -183,6 +185,8 @@ def test_spherical_graph_computes_geometry_and_vector_components():
     assert r.shape == (3,)
     assert polar.shape == (3,)
     assert azimuth.shape == (3,)
+    assert lat.shape == (3,)
+    assert lon.shape == (3,)
     assert b_r.shape == (3,)
     assert b_p.shape == (3,)
     assert b_a.shape == (3,)
@@ -191,9 +195,46 @@ def test_spherical_graph_computes_geometry_and_vector_components():
     np.testing.assert_allclose(r[0], 1.0)
     np.testing.assert_allclose(polar[0], np.pi / 2)
     np.testing.assert_allclose(azimuth[0], 0.0)
+    np.testing.assert_allclose(lat[0], 0.0)
+    np.testing.assert_allclose(lon[0], 0.0)
     np.testing.assert_allclose(b_r[0], 1.0)
     np.testing.assert_allclose(b_p[0], -3.0)
     np.testing.assert_allclose(b_a[0], 2.0)
+
+
+def test_spherical_graph_recovers_cartesian_coordinates_and_mass_flux_from_radius_lon_lat():
+    variables = [
+        "R [R]",
+        "Lon [deg]",
+        "Lat [deg]",
+        "Rho [kg/m^3]",
+        "U_x [m/s]",
+        "U_y [m/s]",
+        "U_z [m/s]",
+    ]
+    points = np.array(
+        [
+            [2.0, 0.0, 0.0, 5.0, 3.0, 4.0, 0.0],
+            [2.0, 90.0, 0.0, 7.0, 3.0, 4.0, 0.0],
+        ],
+        dtype=float,
+    )
+    corners = np.empty((0, 0), dtype=int)
+    sds = SmartDs(Dataset(points, corners, aux={}, title="shell", variables=variables, zone="zshell"))
+    sds.merge_computation_graph(build_batsrus_graph(tuple(sds.raw.variables)))
+    sds.merge_computation_graph(build_spherical_graph(tuple(sds)))
+
+    np.testing.assert_allclose(sds["X [R]"], [2.0, 0.0], atol=1.0e-12)
+    np.testing.assert_allclose(sds["Y [R]"], [0.0, 2.0], atol=1.0e-12)
+    np.testing.assert_allclose(sds["Z [R]"], [0.0, 0.0], atol=1.0e-12)
+    np.testing.assert_allclose(sds["U_r [m/s]"], [3.0, 4.0], atol=1.0e-12)
+    np.testing.assert_allclose(sds["mass_flux [kg/m^2/s]"], [15.0, 28.0], atol=1.0e-12)
+
+
+def test_spherical_graph_registers_lon_lat_to_cartesian_path_without_raw_radius():
+    graph = build_spherical_graph(("X [R]", "Y [R]", "Z [R]", "Lon [deg]", "Lat [deg]"))
+
+    assert {"X [R]", "Y [R]", "Z [R]"} <= graph.fields()
 
 
 def test_batsrus_graph_computes_electron_density_fields():

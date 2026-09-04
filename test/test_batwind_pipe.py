@@ -177,6 +177,66 @@ def test_run_batwind_pipe_reprocesses_when_recorded_output_is_missing(tmp_path):
     assert second.skipped_files == []
 
 
+def test_run_batwind_pipe_logs_regenerating_missing_output_reason(tmp_path, caplog):
+    file_path = tmp_path / "alpha.plt"
+    file_path.write_text("")
+    output_path = tmp_path / "outputs" / "alpha.txt"
+
+    def process_file(path):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(Path(path).name)
+        recorder_log = logging.getLogger("recorder.test_pipeline")
+        recorder_log.setLevel(logging.DEBUG)
+        recorder_log.debug("output_txt %r", str(output_path.relative_to(tmp_path)))
+
+    run_batwind_pipe(tmp_path, process_file=process_file)
+    output_path.unlink()
+
+    with caplog.at_level(logging.INFO, logger="batwind.pipelines.batwind_pipe"):
+        run_batwind_pipe(tmp_path, process_file=process_file)
+
+    assert "Regenerating missing output for alpha.plt (outputs/alpha.txt)..." in [record.getMessage() for record in caplog.records]
+
+
+def test_run_batwind_pipe_reprocesses_old_unit_shell_entry_missing_new_magnetic_plot(tmp_path, monkeypatch):
+    file_path = tmp_path / "shl_demo_n00000042.plt"
+    file_path.write_text("")
+    legacy_output = tmp_path / "shell" / "shl_demo_n00000042.mass_flux_map.png"
+    migrated_output = tmp_path / "shell" / "shl_demo_n00000042.magnetic_components.png"
+    calls: list[str] = []
+
+    def process_file(path):
+        calls.append(Path(path).name)
+        recorder_log = logging.getLogger("recorder.test_shell_pipeline")
+        recorder_log.setLevel(logging.DEBUG)
+        legacy_output.parent.mkdir(parents=True, exist_ok=True)
+        if len(calls) == 1:
+            legacy_output.write_text("legacy")
+            recorder_log.debug("shell_radius_R %r", [1.0])
+            recorder_log.debug("shell_mass_flux_map_png %r", str(legacy_output.relative_to(tmp_path)))
+            return
+        migrated_output.write_text("migrated")
+        recorder_log.debug("shell_magnetic_components_png %r", str(migrated_output.relative_to(tmp_path)))
+
+    monkeypatch.setattr(
+        batwind_pipe_module,
+        "process_file_for_pipeline",
+        lambda pipeline_name: process_file,
+    )
+
+    first = run_batwind_pipe(tmp_path, pipeline="shell")
+    second = run_batwind_pipe(tmp_path, pipeline="shell")
+
+    assert [path.name for path in first.processed_files] == ["shl_demo_n00000042.plt"]
+    assert [path.name for path in second.processed_files] == ["shl_demo_n00000042.plt"]
+    assert calls == ["shl_demo_n00000042.plt", "shl_demo_n00000042.plt"]
+    assert second.skipped_files == []
+    assert migrated_output.exists()
+    assert second.computed_results["shl_demo_n00000042.plt"]["shell_magnetic_components_png"]["value"] == (
+        "shell/shl_demo_n00000042.magnetic_components.png"
+    )
+
+
 def test_run_batwind_pipe_discovers_component_io2_directories_from_run_root(tmp_path):
     sc_file = tmp_path / "SC" / "IO2" / "alpha.plt"
     ih_file = tmp_path / "IH" / "IO2" / "beta.plt"

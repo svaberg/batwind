@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import re
 
 log = logging.getLogger(__name__)
 
@@ -40,3 +41,35 @@ def output_prefix_from_input_file(input_file) -> str:
     out = slug_key(stem)
     log.debug("output_prefix_from_input_file '%s' -> '%s'", input_file, out)
     return out
+
+
+def iteration_token_from_path(path: str | Path) -> str | None:
+    """
+    Extract one BATSRUS iteration token like ``n00109520`` from a path stem.
+    """
+    stem = Path(str(path)).stem
+    match = re.search(r"(?:^|_)n(\d+)(?:[_\.]|$)", stem)
+    if match is None:
+        return None
+    return f"n{match.group(1)}"
+
+
+def annotate_iteration_axis(axis, path: str | Path) -> None:
+    """
+    Draw one BATSRUS iteration token inside an axes when the path encodes it.
+    """
+    token = iteration_token_from_path(path)
+    if token is None:
+        return
+    axis.text(
+        0.02,
+        0.98,
+        token,
+        transform=axis.transAxes,
+        ha="left",
+        va="top",
+        fontsize=12,
+        fontweight="bold",
+        bbox={"facecolor": "white", "edgecolor": "0.4", "alpha": 0.9, "pad": 3.0},
+        zorder=1000,
+    )

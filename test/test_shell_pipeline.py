@@ -13,8 +13,10 @@ from batwind.pipelines.recorder import BatwindRecordHandler
 class FakeMagneticShellDs:
     def __init__(self) -> None:
         self._fields = {
-            "I": np.array([1.0, 2.0, 1.0, 2.0], dtype=float),
-            "J": np.array([1.0, 1.0, 2.0, 2.0], dtype=float),
+            "R [R]": np.array([1.0, 1.0, 1.0, 1.0], dtype=float),
+            "I": np.array([1.0, 1.0, 1.0, 1.0], dtype=float),
+            "J": np.array([1.0, 2.0, 1.0, 2.0], dtype=float),
+            "K": np.array([1.0, 1.0, 2.0, 2.0], dtype=float),
             "Lon [deg]": np.array([0.0, 1.0, 0.0, 1.0], dtype=float),
             "Lat [deg]": np.array([0.0, 0.0, 1.0, 1.0], dtype=float),
             "B_r [T]": np.array([1.0, 2.0, 3.0, 4.0], dtype=float),
@@ -33,6 +35,37 @@ class FakeStructuredShellDs:
             "I": np.array([1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2], dtype=float),
             "J": np.array([1, 1, 2, 2, 3, 3, 1, 1, 2, 2, 3, 3], dtype=float),
             "K": np.array([1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2], dtype=float),
+            "R [R]": np.array([2.0, 3.0, 2.0, 3.0, 2.0, 3.0, 2.0, 3.0, 2.0, 3.0, 2.0, 3.0], dtype=float),
+            "Lon [deg]": np.array([0.0, 0.0, 10.0, 10.0, 20.0, 20.0, 0.0, 0.0, 10.0, 10.0, 20.0, 20.0], dtype=float),
+            "Lat [deg]": np.array([-10.0, -10.0, -10.0, -10.0, -10.0, -10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0], dtype=float),
+            "RBODY [m]": np.array([2.0], dtype=float),
+            "mass_flux [kg/m^2/s]": np.array([1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0, 5.0, 50.0, 6.0, 60.0], dtype=float),
+        }
+        self.raw = SimpleNamespace(variables=list(self._fields))
+
+    def __getitem__(self, name: str):
+        return self._fields[name]
+
+
+class FakeMagneticShellDsNoIndices:
+    def __init__(self) -> None:
+        self._fields = {
+            "R [R]": np.array([1.0, 1.0, 1.0, 1.0], dtype=float),
+            "Lon [deg]": np.array([0.0, 1.0, 0.0, 1.0], dtype=float),
+            "Lat [deg]": np.array([0.0, 0.0, 1.0, 1.0], dtype=float),
+            "B_r [T]": np.array([1.0, 2.0, 3.0, 4.0], dtype=float),
+            "bphi [T]": np.array([-1.0, -2.0, -3.0, -4.0], dtype=float),
+            "btheta [T]": np.array([0.5, 1.0, 1.5, 2.0], dtype=float),
+        }
+        self.raw = SimpleNamespace(variables=list(self._fields))
+
+    def __getitem__(self, name: str):
+        return self._fields[name]
+
+
+class FakeStructuredShellDsNoIndices:
+    def __init__(self) -> None:
+        self._fields = {
             "R [R]": np.array([2.0, 3.0, 2.0, 3.0, 2.0, 3.0, 2.0, 3.0, 2.0, 3.0, 2.0, 3.0], dtype=float),
             "Lon [deg]": np.array([0.0, 0.0, 10.0, 10.0, 20.0, 20.0, 0.0, 0.0, 10.0, 10.0, 20.0, 20.0], dtype=float),
             "Lat [deg]": np.array([-10.0, -10.0, -10.0, -10.0, -10.0, -10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0], dtype=float),
@@ -96,8 +129,8 @@ def test_process_plt_file_passes_iteration_label_to_magnetic_plot(monkeypatch, t
 
     captured: dict[str, object] = {}
 
-    def fake_plot(component_maps, *, iteration_label, lon_nodes, lat_nodes, output_path):
-        captured["iteration_label"] = iteration_label
+    def fake_plot(component_maps, *, source_path, lon_nodes, lat_nodes, output_path):
+        captured["source_path"] = source_path
         captured["output_path"] = output_path
         output_path.write_text("", encoding="utf-8")
 
@@ -105,8 +138,29 @@ def test_process_plt_file_passes_iteration_label_to_magnetic_plot(monkeypatch, t
 
     shell_pipeline.process_plt_file(file_path)
 
-    assert captured["iteration_label"] == "Iteration n00000042"
+    assert Path(captured["source_path"]).name == "shl_demo_n00000042.plt"
     assert Path(captured["output_path"]).name == "shl_demo_n00000042.magnetic_components.png"
+
+
+def test_is_unit_radius_shell_uses_geometry_not_raw_field_presence():
+    assert shell_pipeline.is_unit_radius_shell(FakeMagneticShellDs())
+    assert not shell_pipeline.is_unit_radius_shell(FakeStructuredShellDs())
+
+
+def test_load_magnetic_shell_grid_infers_native_shape_without_indices():
+    grid_shape, lon_nodes, lat_nodes = shell_pipeline.load_magnetic_shell_grid(FakeMagneticShellDsNoIndices())
+
+    assert grid_shape == (2, 2)
+    np.testing.assert_allclose(lon_nodes, [0.0, 1.0])
+    np.testing.assert_allclose(lat_nodes, [0.0, 1.0])
+
+
+def test_load_magnetic_shell_grid_uses_native_ijk_layout_for_unit_shell():
+    grid_shape, lon_nodes, lat_nodes = shell_pipeline.load_magnetic_shell_grid(FakeMagneticShellDs())
+
+    assert grid_shape == (2, 2)
+    np.testing.assert_allclose(lon_nodes, [0.0, 1.0])
+    np.testing.assert_allclose(lat_nodes, [0.0, 1.0])
 
 
 def test_shell_map_and_profile_uses_native_ijk_layout():
@@ -125,3 +179,15 @@ def test_shell_map_and_profile_uses_native_ijk_layout():
         np.sin(np.deg2rad(np.array([10.0])[:, None])) - np.sin(np.deg2rad(np.array([-10.0])[:, None]))
     ) * np.deg2rad(np.array([10.0, 10.0]))[None, :]
     np.testing.assert_allclose(mass_loss_kg_s, [7.0 * 16.0 * solid_angle[0, 0], 70.0 * 36.0 * solid_angle[0, 0]])
+
+
+def test_load_shell_grid_infers_native_shape_without_indices():
+    grid_shape, shell_radii_r, lon_nodes, lat_nodes, shell_areas_m2 = shell_pipeline.load_shell_grid(
+        FakeStructuredShellDsNoIndices()
+    )
+
+    assert grid_shape == (2, 3, 2)
+    np.testing.assert_allclose(shell_radii_r, [2.0, 3.0])
+    np.testing.assert_allclose(lon_nodes, [0.0, 10.0, 20.0])
+    np.testing.assert_allclose(lat_nodes, [-10.0, 10.0])
+    assert len(shell_areas_m2) == 2

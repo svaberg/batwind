@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import re
 from time import perf_counter
 
 import matplotlib.pyplot as plt
@@ -11,6 +12,7 @@ from matplotlib.colors import LogNorm
 from matplotlib.colors import SymLogNorm
 
 from batwind.constants import B_R_SYMLOG_LINTHRESH_T
+from batwind.pipelines.utils import annotate_iteration_axis
 from batwind.pipelines.utils import output_prefix_from_input_file
 from batwind.smart_ds import SmartDs
 from batwind.visualisation.slice import plot_xz_slice_tripcolor_with_cross_quantiles
@@ -19,6 +21,14 @@ log = logging.getLogger(__name__)
 # Method for recording structured, machine-ingested pipeline payloads.
 add_record = logging.getLogger(f"recorder.{__name__}").debug
 BR_CMAP = "RdBu_r"
+
+
+def slice_context_label(path: Path) -> str:
+    stem = path.stem
+    match = re.search(r"_n(\d+)$", stem)
+    if match is None:
+        return stem
+    return stem[:match.start()]
 
 
 def process_plt_file(file_path: str | Path) -> None:
@@ -37,6 +47,7 @@ def process_plt_file(file_path: str | Path) -> None:
     smart_ds = SmartDs.from_file(path, batsrus=True, spherical=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     prefix = output_prefix_from_input_file(path.name)
+    context_label = slice_context_label(path)
     log.debug("Loading and preparing slice dataset complete in %.2f s.", perf_counter() - stage_start)
 
     # Start: make, save, and record the density slice.
@@ -47,6 +58,8 @@ def process_plt_file(file_path: str | Path) -> None:
         var="Rho [kg/m^3]",
         tripcolor_kwargs={"shading": "flat", "norm": LogNorm()},
     )
+    _axes[0].set_title(f"{_axes[0].get_title()} ({context_label})")
+    annotate_iteration_axis(_axes[0], path)
     out_path = output_dir / f"{prefix}.slices.rho.png"
     fig.savefig(out_path)
     plt.close(fig)
@@ -61,6 +74,8 @@ def process_plt_file(file_path: str | Path) -> None:
         var="U [m/s]",
         tripcolor_kwargs={"shading": "flat"},
     )
+    _axes[0].set_title(f"{_axes[0].get_title()} ({context_label})")
+    annotate_iteration_axis(_axes[0], path)
     out_path = output_dir / f"{prefix}.slices.u.png"
     fig.savefig(out_path)
     plt.close(fig)
@@ -75,6 +90,8 @@ def process_plt_file(file_path: str | Path) -> None:
         var="B [T]",
         tripcolor_kwargs={"shading": "flat", "norm": LogNorm()},
     )
+    _axes[0].set_title(f"{_axes[0].get_title()} ({context_label})")
+    annotate_iteration_axis(_axes[0], path)
     out_path = output_dir / f"{prefix}.slices.b.png"
     fig.savefig(out_path)
     plt.close(fig)
@@ -93,6 +110,8 @@ def process_plt_file(file_path: str | Path) -> None:
             "norm": SymLogNorm(linthresh=B_R_SYMLOG_LINTHRESH_T, base=10),
         },
     )
+    _axes[0].set_title(f"{_axes[0].get_title()} ({context_label})")
+    annotate_iteration_axis(_axes[0], path)
     out_path = output_dir / f"{prefix}.slices.br.png"
     fig.savefig(out_path)
     plt.close(fig)

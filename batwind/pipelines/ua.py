@@ -12,6 +12,7 @@ from matplotlib.colors import SymLogNorm
 import numpy as np
 
 from batwind.data.ua_gitm import read_ua_gitm_bin
+from batwind.pipelines.utils import annotate_iteration_axis
 from batwind.pipelines.utils import output_prefix_from_input_file
 from batwind.recipes.ua import build_ua_graph
 from batwind.smart_ds import SmartDs
@@ -186,6 +187,7 @@ def _plot_shell_flux_profile(
     ax.set_title(title)
     ax.set_yscale("log")
     ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize="small")
+    annotate_iteration_axis(ax, png_path)
     fig.savefig(png_path)
     plt.close(fig)
 
@@ -243,7 +245,8 @@ def _plot_shell_flux_map(
     axes[1].set_ylabel("Latitude [deg]")
     fig.colorbar(mesh, ax=axes[1], label="Mass flux [kg/m^2/s]")
 
-    fig.suptitle(f"{title_prefix}  shell flux map")
+    axes[0].text(0.5, 1.05, f"{title_prefix}  shell flux map", transform=axes[0].transAxes, ha="center", va="bottom")
+    annotate_iteration_axis(axes[0], png_path)
     fig.savefig(png_path)
     plt.close(fig)
 
@@ -385,7 +388,8 @@ def process_bin_file(file_path: str | Path) -> None:
     axes[1].set_ylabel("Altitude [m]")
     fig.colorbar(mesh, ax=axes[1], label="neutral number density [1/m^3]")
 
-    fig.suptitle(shared_title)
+    axes[0].text(0.5, 1.05, shared_title, transform=axes[0].transAxes, ha="center", va="bottom")
+    annotate_iteration_axis(axes[0], path)
     out_path = output_dir / f"{prefix}.ua.lat_alt.png"
     fig.savefig(out_path)
     plt.close(fig)
@@ -414,7 +418,8 @@ def process_bin_file(file_path: str | Path) -> None:
     axes[1].set_ylabel("Latitude [deg]")
     fig.colorbar(mesh, ax=axes[1], label="Solar Zenith Angle [rad]")
 
-    fig.suptitle(shared_title)
+    axes[0].text(0.5, 1.05, shared_title, transform=axes[0].transAxes, ha="center", va="bottom")
+    annotate_iteration_axis(axes[0], path)
     out_path = output_dir / f"{prefix}.ua.lon_lat.png"
     fig.savefig(out_path)
     plt.close(fig)
@@ -501,7 +506,15 @@ def process_bin_file(file_path: str | Path) -> None:
     axes[1].set_aspect("equal")
     fig.colorbar(mesh, ax=axes[1], label="neutral number density [1/m^3]")
 
-    fig.suptitle(f"{shared_title}  exaggerated shell (opposite meridians)")
+    axes[0].text(
+        0.5,
+        1.05,
+        f"{shared_title}  exaggerated shell (opposite meridians)",
+        transform=axes[0].transAxes,
+        ha="center",
+        va="bottom",
+    )
+    annotate_iteration_axis(axes[0], path)
     out_path = output_dir / f"{prefix}.ua.shell.png"
     fig.savefig(out_path)
     plt.close(fig)
